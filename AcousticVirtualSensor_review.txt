@@ -1,0 +1,117 @@
+BAO CAO KIEM TRA DU AN ACOUSTIC VIRTUAL SENSOR
+Ngay kiem tra: 2026-08-25
+Pham vi: chi doc source va cau truc thu muc; khong sua code, khong tao code.
+Ghi chu: file nay la bao cao .txt theo yeu cau.
+
+1. Tong quan
+
+Du an co cau truc module kha ro: audio, preprocessing, nmf, crnn, annotation,
+event, evaluation, runtime va scripts. Huong thiet ke chinh la pipeline:
+
+WAV -> STFT -> log spectrogram -> NNLS voi W_standard -> H_event_sum ->
+baseline peak detection hoac Hybrid CRNN -> event grouping -> count/feed rate.
+
+Kiem tra cu phap bang AST cho tat ca file .py: khong thay syntax error.
+Tuy nhien, du an hien tai chua san sang chay end-to-end vi co loi import/name,
+thieu tham so config, thieu artifact model/data, va thieu file dependency/docs.
+
+2. Van de nghiem trong can sua truoc
+
+- src/crnn/inference.py:27 dung Optional[torch.device] nhung file chi import
+  "Union" tu typing o dong 11. Khi Python dinh nghia class/function, ten
+  Optional co the gay NameError. Can import Optional.
+
+- src/event/binary_to_event.py:25 dung Optional[np.ndarray] nhung file chi import
+  "List, Dict, Any" o dong 10. Day cung la loi NameError khi import module.
+
+- src/crnn/trainer.py:39 doc config.USE_POSITIVE_CLASS_WEIGHT, nhung config.py
+  khong dinh nghia bien nay. Train CRNN voi pos_weight se fail bang AttributeError.
+
+- src/runtime/sensor.py:49 va src/runtime/streaming.py:34,80 doc
+  config.WINDOW_SECONDS, nhung config.py khong dinh nghia WINDOW_SECONDS.
+  Khoi tao AcousticVirtualSensorCore hoac StreamingSensorEngine se fail.
+
+- models/data hien dang rong: khong co models/nmf/W_standard.npy va khong co
+  models/crnn/crnn_model.pt. AcousticVirtualSensorCore luon load W_standard khi
+  khoi tao, va mode "crnn" con can checkpoint CRNN. Vi vay runtime/evaluate/test
+  chua the chay neu chua train hoac cung cap model.
+
+3. Thieu file/cau truc quan trong
+
+- Structure.txt ghi co README.md va requirements.txt, nhung hai file nay khong
+  ton tai trong thu muc goc. Dieu nay lam nguoi khac kho cai moi truong va kho
+  biet thu tu chay pipeline.
+
+- main.py ton tai nhung rong. Du an chua co entrypoint thong nhat; nguoi dung
+  phai doan nen chay scripts nao truoc.
+
+- scripts/train_nmf.py tham chieu data/train_sources/event_source.wav,
+  bowl_source.wav va env_source.wav, nhung thu muc/file nay khong co trong cau
+  truc thuc te hien tai.
+
+- data, models va outputs hien khong co file du lieu/artifact nao. Neu day la
+  repo code-only thi can README noi ro cach chuan bi du lieu va artifact.
+
+4. Rui ro thiet ke va logic
+
+- StreamingSensorEngine co docstring noi "CRNN", nhung process_chunk hien chi
+  tinh H_event_sum va peak detection tren sliding window. Chua co buoc tao
+  log-mel streaming, chua goi CRNNPredictor, va chua group probability thanh
+  event. Neu muc tieu la real-time CRNN, thiet ke streaming chua hoan tat.
+
+- frame_to_time trong src/audio/framing.py noi timestamp la center cua frame,
+  nhung cong thuc dang tra ve frame_idx * hop_length / sr, tuc vi tri bat dau
+  hop khi CENTER_STFT=False. Can thong nhat dinh nghia time alignment, vi label
+  event va metric tolerance phu thuoc truc tiep vao diem nay.
+
+- log_compression co tham so epsilon, nhung khi epsilon != 1.0 lai dung
+  log(magnitude + epsilon), khac voi cong thuc log(1 + S) mac dinh. Neu epsilon
+  duoc hieu la offset nho de tranh log(0), hanh vi nay can duoc dinh nghia ro.
+
+- Evaluation hien chu yeu so sanh count/event F1, chua dung compute_frame_metrics
+  trong scripts/evaluate.py. Neu can danh gia CRNN frame-level, nen them output
+  frame metrics khi co annotation.
+
+- CRNNTrainer co import random_split nhung khong dung trong trainer.py; mot so
+  import khac cung du thua. Khong gay loi, nhung lam code kho doc hon.
+
+5. Diem tot
+
+- Cau truc module tach biet kha sach: loader, STFT, log compression, NNLS,
+  activation, model, training, inference, event va metrics duoc chia rieng.
+
+- Nhieu ham co validate input shape va raise loi ro rang, vi du load_audio,
+  compute_stft, load_dictionary, extract_hybrid_windows.
+
+- Pipeline annotation -> build dataset -> train CRNN -> evaluate co y do ro,
+  phu hop voi bai toan dem su kien acoustic.
+
+- Dung pathlib cho duong dan va gom tham so trong config.py la huong tot cho
+  viec tai lap thi nghiem.
+
+6. Khuyen nghi uu tien
+
+1. Sua cac loi NameError/AttributeError truoc: Optional import, WINDOW_SECONDS,
+   USE_POSITIVE_CLASS_WEIGHT.
+
+2. Bo sung README.md va requirements.txt, ghi ro thu tu chay:
+   train_nmf -> annotate_train -> build_crnn_dataset -> train_crnn -> evaluate.
+
+3. Quyet dinh artifact nao duoc commit, artifact nao phai tu tao. Toi thieu can
+   huong dan tao W_standard.npy va crnn_model.pt.
+
+4. Hoan thien main.py thanh entrypoint CLI hoac xoa neu khong dung.
+
+5. Chuan hoa time alignment giua STFT frame, annotation frame va event metrics.
+
+6. Neu can streaming CRNN that su, bo sung bo dem log-mel/probability trong
+   StreamingSensorEngine thay vi chi baseline peak detection.
+
+7. Them smoke test nho cho import module va shape pipeline bang synthetic audio
+   ngan, de bat loi config/import som ma khong can data that.
+
+Ket luan:
+Du an co skeleton tot va y tuong pipeline ro, nhung hien tai chua the chay
+on dinh end-to-end. Viec can lam dau tien la sua loi import/config bi thieu va
+bo sung tai lieu dependency/artifact. Sau do moi nen danh gia chat luong model
+hoac tuning threshold/metrics.

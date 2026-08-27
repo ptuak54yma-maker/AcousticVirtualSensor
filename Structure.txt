@@ -1,0 +1,93 @@
+AcousticVirtualSensor/
+│
+├── README.md
+├── requirements.txt
+├── config.py
+├── main.py
+│
+├── data/
+│   ├── train/
+│   │   └── *.wav
+│   │
+│   ├── test/
+│   │   └── *.wav
+│   │
+│   ├── annotations/
+│   │   ├── train/
+│   │   │   └── *_labels.npz
+│   │   └── test/
+│   │       └── *_labels.npz
+│   │
+│   └── datasets/
+│       ├── crnn_train.npz
+│       └── ...
+│
+├── models/
+│   │
+│   ├── nmf/
+│   │   └── W_standard.npy
+│   │
+│   └── crnn/
+│       └── crnn_model.pt
+│
+├── src/
+│   │
+│   ├── audio/
+│   │   ├── __init__.py
+│   │   ├── loader.py
+│   │   └── framing.py
+│   │
+│   ├── preprocessing/
+│   │   ├── __init__.py
+│   │   ├── stft.py
+│   │   └── log_compression.py
+│   │
+│   ├── nmf/
+│   │   ├── __init__.py
+│   │   ├── dictionary.py
+│   │   ├── nnls.py
+│   │   └── activation.py
+│   │
+│   ├── crnn/
+│   │   ├── __init__.py
+│   │   ├── model.py
+│   │   ├── dataset.py
+│   │   ├── trainer.py
+│   │   └── inference.py
+│   │
+│   ├── annotation/
+│   │   ├── __init__.py
+│   │   ├── peak_reference.py
+│   │   ├── manual_label.py
+│   │   └── annotation_io.py
+│   │
+│   ├── event/
+│   │   ├── __init__.py
+│   │   ├── peak_detection.py
+│   │   ├── binary_to_event.py
+│   │   └── counting.py
+│   │
+│   ├── runtime/
+│   │   ├── __init__.py
+│   │   ├── sensor.py
+│   │   ├── offline.py
+│   │   └── streaming.py
+│   │
+│   └── evaluation/
+│       ├── __init__.py
+│       ├── frame_metrics.py
+│       ├── event_metrics.py
+│       └── count_metrics.py
+│
+├── scripts/
+│   ├── train_nmf.py
+│   ├── annotate_train.py
+│   ├── build_crnn_dataset.py
+│   ├── train_crnn.py
+│   ├── test_crnn.py
+│   └── evaluate.py
+│
+└── outputs/
+    ├── figures/
+    ├── logs/
+    └── results/

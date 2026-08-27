@@ -1,0 +1,280 @@
+NOTE DANH GIA LOI VA PHUONG AN SUA DU AN ACOUSTIC VIRTUAL SENSOR
+Ngay lap note: 2026-08-25
+Pham vi: danh gia loi, de xuat cach sua; chua sua source code.
+
+1. Tom tat hien trang
+
+- Du an da co README.md, requirements.txt, main.py va du lieu WAV trong data/train,
+  data/test.
+- Kiem tra cu phap AST tat ca file .py: khong co syntax error.
+- Smoke import phat hien loi runtime/import that su:
+  + src/crnn/inference.py bi NameError: Optional is not defined.
+  + src/event/binary_to_event.py bi NameError: Optional is not defined.
+  + src/crnn/trainer.py bi AttributeError: config khong co USE_POSITIVE_CLASS_WEIGHT.
+- models/nmf va models/crnn hien chua co file artifact. Chua thay
+  W_standard.npy va crnn_model.pt.
+
+2. Loi uu tien P0 - can sua truoc de import/chay duoc
+
+2.1. Thieu Optional trong src/crnn/inference.py
+
+Vi tri:
+- src/crnn/inference.py:11 import "Union"
+- src/crnn/inference.py:27 dung Optional[torch.device]
+
+Nguyen nhan:
+- Type hint dung Optional nhung chua import tu typing.
+
+Tac dong:
+- Import src.crnn.inference fail ngay bang NameError.
+- main.py va runtime sensor cung fail vi import CRNNPredictor.
+
+Phuong an sua:
+- Doi import thanh: from typing import Union, Optional
+- Hoac them rieng: from typing import Optional
+
+Kiem tra sau sua:
+- python -B -c "import src.crnn.inference"
+
+2.2. Thieu Optional trong src/event/binary_to_event.py
+
+Vi tri:
+- src/event/binary_to_event.py:10 import "List, Dict, Any"
+- src/event/binary_to_event.py:25 dung Optional[np.ndarray]
+
+Nguyen nhan:
+- Type hint dung Optional nhung chua import.
+
+Tac dong:
+- Import src.event.binary_to_event fail ngay bang NameError.
+- src.event.__init__ va runtime pipeline bi anh huong.
+
+Phuong an sua:
+- Doi import thanh: from typing import List, Dict, Any, Optional
+
+Kiem tra sau sua:
+- python -B -c "import src.event.binary_to_event"
+
+2.3. Thieu config.USE_POSITIVE_CLASS_WEIGHT
+
+Vi tri:
+- src/crnn/trainer.py:39 doc config.USE_POSITIVE_CLASS_WEIGHT
+- config.py chua dinh nghia bien nay.
+
+Nguyen nhan:
+- Trainer co logic bat/tat positive class weighting, nhung config thieu flag.
+
+Tac dong:
+- Khi train CRNN voi pos_weight, khoi tao CRNNTrainer fail bang AttributeError.
+
+Phuong an sua de xuat:
+- Them vao config.py, gan gan khu vuc Training setup:
+  USE_POSITIVE_CLASS_WEIGHT = True
+- Neu muon don gian hon, bo dieu kien config va chi dung pos_weight khi
+  pos_weight is not None. Tuy nhien cach them config flag phu hop voi style
+  hien tai hon.
+
+Kiem tra sau sua:
+- python -B -c "from src.crnn.model import HybridCRNN; from src.crnn.trainer import CRNNTrainer; CRNNTrainer(HybridCRNN(), pos_weight=1.0)"
+
+2.4. Thieu config.WINDOW_SECONDS
+
+Vi tri:
+- src/runtime/sensor.py:49
+- src/runtime/streaming.py:34 va 80
+- config.py chua dinh nghia WINDOW_SECONDS.
+
+Nguyen nhan:
+- Runtime streaming can kich thuoc sliding window tinh feed rate, nhung config
+  chua co tham so thoi gian.
+
+Tac dong:
+- Khoi tao AcousticVirtualSensorCore hoac StreamingSensorEngine se fail sau khi
+  sua xong loi import Optional va load duoc W_standard.
+
+Phuong an sua de xuat:
+- Them vao config.py trong phan INPUT AUDIO & STREAMING PARAMETERS:
+  WINDOW_SECONDS = 3.0
+- Ly do: config.SEQUENCE_LENGTH = 128 voi hop 1024 va sr 44100 tuong duong
+  khoang 2.97 giay, comment trong code cung noi "~3.0 seconds".
+
+Kiem tra sau sua:
+- python -B -c "from src.runtime.streaming import StreamingSensorEngine; StreamingSensorEngine(mode='baseline_nmf')"
+  Luu y: lenh nay van can models/nmf/W_standard.npy ton tai.
+
+3. Loi P1 - main.py se fail sau khi sua P0
+
+main.py dang dung nhieu bien config chua co:
+- config.LOG_LEVEL tai main.py:29
+- config.LOG_FILE tai main.py:32
+- config.WINDOW_TITLE tai main.py:66
+- config.WINDOW_WIDTH va WINDOW_HEIGHT tai main.py:67
+- config.FONT_NAME tai main.py:82,85,86,89,90,93,94
+- config.FONT_SIZE_TITLE tai main.py:82
+- config.FONT_SIZE_LABEL tai main.py:85,89,93
+- config.FONT_SIZE_VALUE tai main.py:86
+- config.REFRESH_RATE_MS tai main.py:164
+- config.ENABLE_GUI tai main.py:185
+
+Nguyen nhan:
+- main.py da duoc bo sung CLI/GUI/logging nhung config.py chua bo sung block
+  tuong ung cho logging va GUI.
+
+Tac dong:
+- Sau khi import Optional duoc sua, import main.py co kha nang fail o
+  config.LOG_LEVEL dau tien.
+
+Phuong an sua de xuat:
+- Them nhom config moi:
+  LOG_LEVEL = "INFO"
+  LOG_FILE = "sensor.log"
+  ENABLE_GUI = False
+  WINDOW_TITLE = "Acoustic Virtual Sensor"
+  WINDOW_WIDTH = 520
+  WINDOW_HEIGHT = 360
+  FONT_NAME = "Arial"
+  FONT_SIZE_TITLE = 16
+  FONT_SIZE_LABEL = 11
+  FONT_SIZE_VALUE = 18
+  REFRESH_RATE_MS = 100
+
+Kiem tra sau sua:
+- python -B -c "import main"
+- python main.py --mode baseline --file data/test/Bowl_0.wav
+  Luu y: lenh CLI van can W_standard.npy.
+
+4. Loi P1 - thieu model artifacts
+
+Hien trang:
+- Chua thay models/nmf/W_standard.npy.
+- Chua thay models/crnn/crnn_model.pt.
+
+Tac dong:
+- Baseline runtime can W_standard.npy.
+- CRNN runtime can ca W_standard.npy va crnn_model.pt.
+- scripts/evaluate.py, scripts/test_crnn.py va main.py mode crnn chua chay
+  duoc neu chua train model.
+
+Phuong an sua de xuat:
+- Tao W_standard.npy bang:
+  python scripts/train_nmf.py
+- Sau do tao annotation train:
+  python scripts/annotate_train.py
+- Dong goi dataset:
+  python scripts/build_crnn_dataset.py
+- Train CRNN:
+  python scripts/train_crnn.py
+- Cuoi cung evaluate:
+  python scripts/evaluate.py
+
+Luu y:
+- scripts/train_nmf.py hien da quet cac file phoi_*.wav, noisebowl_*.wav,
+  noiseevir_*.wav trong data/train, phu hop voi du lieu hien co.
+- annotate_train.py can GUI Matplotlib de gan nhan thu cong.
+
+5. Loi/ru ro P2 - du lieu nhan va danh gia
+
+Hien trang:
+- data/train/label.txt va data/test/label.txt la file dem count theo ten file.
+- Pipeline CRNN hien lai mong doi annotation frame-level *_labels.npz trong
+  data/annotations/train hoac data/annotations/test.
+
+Tac dong:
+- label.txt chi co count tong, khong du de train CRNN frame-level.
+- evaluate.py chi tinh event F1 neu co *_labels.npz trong annotations/test.
+
+Phuong an sua de xuat:
+- Neu muc tieu chi dem tong, co the bo sung luong evaluate count-only doc
+  label.txt.
+- Neu muc tieu train CRNN/event-level, can tao *_labels.npz bang annotator cho
+  train va test.
+- Nen ghi ro trong README su khac nhau giua label.txt count-level va
+  *_labels.npz frame/event-level.
+
+6. Rui ro P2 - time alignment
+
+Vi tri:
+- src/audio/framing.py ham frame_to_time.
+
+Van de:
+- Docstring noi timestamp la center cua frame, nhung cong thuc hien tai tra ve
+  frame_idx * hop_length / sr, gan voi start hop khi CENTER_STFT=False.
+
+Tac dong:
+- Co the lech moc su kien khi gan nhan va tinh tolerance event-level.
+
+Phuong an sua de xuat:
+- Chon mot quy uoc duy nhat:
+  + Neu muon timestamp dau frame: sua docstring thanh "frame start time".
+  + Neu muon timestamp tam frame: cong them n_fft / 2 / sr cho center=False.
+- Nen uu tien giu cong thuc hien tai neu annotation da duoc lam theo truc nay,
+  va chi sua docstring/README de tranh lam lech data da co.
+
+7. Rui ro P2 - streaming mode chua that su CRNN
+
+Vi tri:
+- src/runtime/streaming.py
+
+Van de:
+- process_chunk hien tinh STFT -> NNLS -> H_event_sum va peak detection tren
+  sliding window.
+- Chua tao log-mel buffer, chua goi CRNNPredictor, chua group probability.
+
+Tac dong:
+- GUI mode "crnn" co the khong dung CRNN that su trong streaming, hoac se fail
+  do AcousticVirtualSensorCore(mode="crnn") can checkpoint CRNN.
+
+Phuong an sua de xuat:
+- Neu GUI chi can demo realtime baseline: ep engine ve baseline_nmf va ghi ro
+  trong UI/README.
+- Neu can CRNN realtime: them buffer log-mel + h_event_sum du SEQUENCE_LENGTH,
+  goi predictor tren sliding window, threshold probability roi group event.
+
+8. Rui ro P2 - encoding hien thi tieng Viet
+
+Hien tuong:
+- Nhieu chuoi tieng Viet hien thi bi mojibake trong console PowerShell
+  (vi du README/main/scripts).
+
+Tac dong:
+- Khong nhat thiet la loi source, nhung lam log/console/README kho doc tren
+  terminal khong dung UTF-8.
+
+Phuong an sua de xuat:
+- Dam bao file luu UTF-8.
+- Khi chay PowerShell co the dung:
+  chcp 65001
+  $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::UTF8
+- Neu muon on dinh tuyet doi, giu text log tieng Anh/ASCII cho CLI.
+
+9. Thu tu sua khuyen nghi
+
+1. Sua import Optional trong inference.py va binary_to_event.py.
+2. Bo sung config.USE_POSITIVE_CLASS_WEIGHT va config.WINDOW_SECONDS.
+3. Bo sung config cho logging/GUI ma main.py dang dung.
+4. Chay smoke import:
+   python -B -c "import src.crnn.inference"
+   python -B -c "import src.event.binary_to_event"
+   python -B -c "import main"
+5. Train NMF de tao models/nmf/W_standard.npy.
+6. Chay baseline tren 1 file test de kiem tra pipeline co qua duoc runtime.
+7. Tao annotation frame-level, build dataset, train CRNN.
+8. Evaluate baseline vs CRNN.
+
+10. Checklist xac nhan sau khi sua
+
+- [ ] Tat ca smoke import pass.
+- [ ] models/nmf/W_standard.npy ton tai va co shape (1025, 48).
+- [ ] main.py --mode baseline --file data/test/Bowl_0.wav chay duoc.
+- [ ] data/annotations/train co *_labels.npz cho cac file Train_*.wav.
+- [ ] data/datasets/crnn_train.npz duoc tao.
+- [ ] models/crnn/crnn_model.pt duoc tao sau train.
+- [ ] scripts/evaluate.py tao outputs/results/comparison_results.csv.
+
+Ket luan:
+- Loi can sua gap nhat la NameError do thieu Optional va AttributeError do
+  thieu config.
+- Sau khi sua cac loi nay, nut that tiep theo la artifact model: W_standard.npy
+  cho baseline va crnn_model.pt cho CRNN.
+- Nen tach ro hai muc tieu: baseline count-only co the chay som sau khi co NMF,
+  con CRNN can annotation frame-level va training pipeline day du.
