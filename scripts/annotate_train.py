@@ -1,11 +1,16 @@
 """
 ===============================================================================
-Script: Annotate Training Files (scripts/annotate_train.py)
+Script: Standalone Label Annotation Tool (scripts/annotate_train.py)
 ===============================================================================
 
-Iterates through data/train/*.wav, runs NMF feature extraction, launches
-the interactive annotation tool, and saves validated ground truth into
-data/annotations/train/*_labels.npz.
+Launches interactive frame-level manual annotation for Train_*.wav files.
+Workflow:
+1. Load W_standard.npy to compute H_event_sum (cached for fast re-opening).
+2. Load optimal peak parameters (P*, D*) from models/peak_detection/peak_params.json.
+3. Detect initial reference peaks using (P*, D*) if no previous annotation exists.
+4. If an annotation file (*_labels.npz) already exists, reload previous manual labels.
+5. Launch interactive Matplotlib GUI for verification and manual corrections.
+6. Save ground-truth labels into data/annotations/train/*_labels.npz.
 """
 
 import sys
@@ -25,58 +30,108 @@ from src.preprocessing.log_compression import log_compression
 from src.nmf.dictionary import load_dictionary
 from src.nmf.nnls import solve_nnls_batch
 from src.nmf.activation import compute_h_event_sum
-from src.annotation.peak_reference import detect_reference_peaks
+from src.annotation.peak_reference import detect_reference_peaks, load_peak_parameters
 from src.annotation.manual_label import InteractiveAnnotator
-from src.annotation.annotation_io import save_annotation
+from src.annotation.annotation_io import save_annotation, load_annotation
+
+# Directory to cache intermediate NMF envelopes to avoid redundant computation
+FEATURE_CACHE_DIR = config.DATA_DIR / "features" / "train"
+FEATURE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def annotate_dataset():
-    # Chỉ quét đúng các file Train_*.wav cho huấn luyện CRNN
+def get_or_compute_features(wav_path: Path, w_matrix: np.ndarray):
+    """Nạp đặc trưng NMF từ cache hoặc tính mới nếu chưa có."""
+    feat_file = FEATURE_CACHE_DIR / f"{wav_path.stem}_feat.npz"
+
+    if feat_file.is_file():
+        data = np.load(str(feat_file))
+        return data["h_event_sum"], data["frame_times"]
+
+    print(f"    [*] Đang trích xuất đặc trưng NMF lần đầu cho {wav_path.name}...")
+    audio, sr = load_audio(wav_path, target_sr=config.SAMPLE_RATE)
+    stft_matrix = compute_stft(audio)
+    v_matrix = log_compression(stft_matrix)
+    h_matrix = solve_nnls_batch(v_matrix, w_matrix)
+    h_event_sum = compute_h_event_sum(h_matrix)
+
+    total_frames = len(h_event_sum)
+    frame_times = frame_to_time(np.arange(total_frames), hop_length=config.HOP_LENGTH, sr=sr)
+
+    np.savez_compressed(
+        str(feat_file),
+        h_event_sum=h_event_sum.astype(np.float32),
+        frame_times=frame_times.astype(np.float32)
+    )
+    return h_event_sum, frame_times
+
+
+def run_annotation():
+    print("=" * 70)
+    print("GIAI ĐOẠN 4: GÁN NHÃN THỦ CÔNG FRAME-LEVEL (ANNOTATE TRAIN SET)")
+    print("=" * 70)
+
+    # 1. Quét danh sách file âm thanh tập Train
     train_wav_files = sorted(list(config.TRAIN_AUDIO_DIR.glob(config.PATTERN_CRNN_TRAIN)))
     if not train_wav_files:
-        # Dự phòng tìm ở thư mục data/ chung nếu chưa phân chia subfolder
         train_wav_files = sorted(list(config.DATA_DIR.glob(f"**/{config.PATTERN_CRNN_TRAIN}")))
-    
+
     if not train_wav_files:
-        print(f"[!] Không tìm thấy file nào khớp mẫu '{config.PATTERN_CRNN_TRAIN}'.")
+        print(f"[!] Không tìm thấy file âm thanh nào khớp với '{config.PATTERN_CRNN_TRAIN}' trong {config.TRAIN_AUDIO_DIR}")
         return
 
-    print(f"[*] Tìm thấy {len(train_wav_files)} file trong tập train. Nạp W_standard...")
+    # 2. Kiểm tra và nạp ma trận từ điển W_standard
+    if not config.W_STANDARD_PATH.is_file():
+        print(f"[!] Lỗi: Không tìm thấy {config.W_STANDARD_PATH}. Hãy chạy scripts/train_nmf.py trước.")
+        return
     w_matrix = load_dictionary(config.W_STANDARD_PATH)
 
+    # 3. Nạp P*, D* tối ưu từ Grid Search
+    opt_p, opt_d = load_peak_parameters()
+    print(f"[*] Nạp tham số Peak Detection chuẩn: P* = {opt_p}, D* = {opt_d} frames")
+    if config.PEAK_PARAMS_PATH.is_file():
+        print(f"    (Nguồn: {config.PEAK_PARAMS_PATH.relative_to(PROJECT_ROOT)})")
+    else:
+        print(f"    (Cảnh báo: Chưa có peak_params.json, đang dùng tham số mặc định)")
+
+    print(f"[*] Tìm thấy {len(train_wav_files)} files cần gán nhãn. Bắt đầu phiên làm việc...")
+
+    # 4. Lặp qua từng file để gán nhãn trên GUI
     for idx, wav_path in enumerate(train_wav_files, 1):
         output_npz = config.TRAIN_ANNOTATION_DIR / f"{wav_path.stem}_labels.npz"
+        print(f"\n[{idx:02d}/{len(train_wav_files):02d}] Đang mở file: {wav_path.name}")
 
-        print(f"\n[{idx}/{len(train_wav_files)}] Đang xử lý: {wav_path.name}")
-        if output_npz.exists():
-            print(f"    [i] Đã tồn tại nhãn: {output_npz.name}. Đang nạp để chỉnh sửa lại...")
-
-        # 1. Pipeline Feature Extraction
-        audio, sr = load_audio(wav_path, target_sr=config.SAMPLE_RATE)
-        stft_matrix = compute_stft(audio)
-        v_matrix = log_compression(stft_matrix)
-        h_matrix = solve_nnls_batch(v_matrix, w_matrix)
-        h_event_sum = compute_h_event_sum(h_matrix)
-
+        # Lấy mảng H_event_sum
+        h_event_sum, frame_times = get_or_compute_features(wav_path, w_matrix)
         total_frames = len(h_event_sum)
-        frame_times = frame_to_time(np.arange(total_frames), hop_length=config.HOP_LENGTH, sr=sr)
 
-        # 2. Sinh mốc đỉnh gợi ý ban đầu
-        ref_peaks, _ = detect_reference_peaks(h_event_sum)
+        # Quyết định mốc đỉnh hiển thị ban đầu
+        if output_npz.is_file():
+            print(f"    [i] Nạp lại nhãn đã gán trước đó từ: {output_npz.name}")
+            annot_data = load_annotation(output_npz)
+            initial_peaks = np.where(annot_data["binary_labels"] == 1)[0]
+        else:
+            # Dùng P*, D* tối ưu để gợi ý mốc đỉnh ban đầu
+            initial_peaks, _ = detect_reference_peaks(
+                h_event_sum,
+                prominence=opt_p,
+                distance=opt_d
+            )
+            print(f"    [*] Khởi tạo {len(initial_peaks)} đỉnh tham chiếu từ P*={opt_p}, D*={opt_d}")
 
-        # 3. Mở Interactive GUI gán nhãn
+        # Mở giao diện tương tác Matplotlib
         annotator = InteractiveAnnotator(
             audio_filename=wav_path.name,
             h_event_sum=h_event_sum,
-            reference_peaks=ref_peaks
+            reference_peaks=initial_peaks,
+            prominence_threshold=opt_p
         )
-        confirmed_peak_frames = annotator.show()
+        confirmed_peaks = annotator.show()
 
-        # 4. Sinh vector nhãn nhị phân Y (0 hoặc 1 cho từng frame)
+        # Tạo nhãn nhị phân Y [0 hoặc 1]
         binary_labels = np.zeros(total_frames, dtype=np.uint8)
-        binary_labels[confirmed_peak_frames] = 1
+        binary_labels[confirmed_peaks] = 1
 
-        # 5. Lưu kết quả Annotation vào file .npz
+        # Lưu nhãn ra file .npz
         save_annotation(
             output_path=output_npz,
             audio_filename=wav_path.name,
@@ -84,16 +139,17 @@ def annotate_dataset():
             binary_labels=binary_labels,
             frame_times=frame_times,
             metadata={
-                "true_count": len(confirmed_peak_frames),
-                "sampling_rate": sr,
-                "n_fft": config.N_FFT,
-                "hop_length": config.HOP_LENGTH
+                "true_count": len(confirmed_peaks),
+                "opt_prominence": opt_p,
+                "opt_distance": opt_d
             }
         )
-        print(f"    [✓] Đã lưu nhãn thành công: {output_npz.name} (Tổng số phôi: {len(confirmed_peak_frames)})")
+        print(f"    [✓] Đã lưu nhãn thành công: {output_npz.name} (Số phôi xác nhận: {len(confirmed_peaks)})")
 
-    print("\n[✓] Hoàn tất gán nhãn cho toàn bộ tập Train!")
+    print("\n" + "=" * 70)
+    print("[✓] ĐÃ HOÀN TẤT TOÀN BỘ QUÁ TRÌNH GÁN NHÃN CHO TẬP TRAIN!")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
-    annotate_dataset()
+    run_annotation()
