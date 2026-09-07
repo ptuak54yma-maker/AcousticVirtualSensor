@@ -40,6 +40,9 @@ def parse_label_txt(label_file_path: Path) -> dict:
                 continue
             parts = line.split(":")
             fname = parts[0].strip()
+            # Tự động bổ sung đuôi .wav nếu thiếu
+            if not fname.lower().endswith(".wav"):
+                fname = f"{fname}.wav"
             try:
                 cnt = int(parts[1].strip())
                 ground_truth[fname] = cnt
@@ -64,11 +67,15 @@ def main():
         return
     w_standard = load_dictionary(config.W_STANDARD_PATH)
 
-    # 3. Trích xuất và Cache H_event_sum cho từng file Train
+# 3. Trích xuất và Cache H_event_sum cho từng file Train
     train_samples = []
     print("\n[*] Đang tính toán và cache H_event_sum cho các file Train_*.wav...")
     
     for fname, true_count in ground_truth_counts.items():
+        # Chỉ xử lý các file thuộc tập Train (bỏ qua Bowl_*)
+        if not fname.startswith("Train_"):
+            continue
+
         wav_path = config.TRAIN_AUDIO_DIR / fname
         if not wav_path.is_file():
             print(f"    [!] Cảnh báo: File {fname} trong label.txt không tồn tại trên ổ cứng. Bỏ qua.")
