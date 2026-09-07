@@ -1,11 +1,11 @@
 """
 ===============================================================================
-Script: Build Multimodal CRNN Dataset (scripts/build_crnn_dataset.py)
+Script: Build CRNN Training Dataset (scripts/build_crnn_dataset.py)
 ===============================================================================
 
-Reads WAV audio and annotated labels, computes Log-Mel Spectrogram and NMF 
-H_event_sum, applies Gaussian label smoothing, extracts temporal context 
-windows, and saves everything into data/datasets/crnn_train.npz.
+Directly consumes precomputed features from data/features/train/
+and manual annotations from data/annotations/train/.
+Eliminates redundant STFT / Audio loading.
 """
 
 import sys
@@ -16,141 +16,113 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
-import librosa
 import config
-
-from src.audio.loader import load_audio
-from src.preprocessing.stft import compute_stft
 from src.annotation.annotation_io import load_annotation, create_gaussian_label
 from src.crnn.dataset import extract_hybrid_windows
 
-
-def compute_log_mel_spectrogram(audio: np.ndarray) -> np.ndarray:
-    """
-    Compute Log-Mel Spectrogram with project standard parameters.
-    """
-    stft_matrix = compute_stft(audio)
-    magnitude_spectrogram = np.abs(stft_matrix)
-
-    # Mel filterbank projection
-    mel_basis = librosa.filters.mel(
-        sr=config.SAMPLE_RATE,
-        n_fft=config.N_FFT,
-        n_mels=config.N_MELS,
-        fmin=config.F_MIN,
-        fmax=config.F_MAX
-    )
-    mel_spectrogram = np.dot(mel_basis, magnitude_spectrogram)
-    log_mel = np.log1p(mel_spectrogram)
-    return np.ascontiguousarray(log_mel, dtype=np.float32)
+TRAIN_FEATURES_DIR = config.DATA_DIR / "features" / "train"
 
 
-def build_train_dataset():
-    annotation_files = sorted(list(config.TRAIN_ANNOTATION_DIR.glob("*_labels.npz")))
-    if not annotation_files:
-        print(f"[!] Không tìm thấy file gán nhãn nào trong: {config.TRAIN_ANNOTATION_DIR}")
-        print("    Vui lòng chạy 'python scripts/annotate_train.py' trước để tạo nhãn ground truth.")
+def main():
+    print("=" * 70)
+    print("GIAI ĐOẠN 5: ĐÓNG GÓI TẬP DỮ LIỆU HUẤN LUYỆN CRNN (TỪ FEATURE CACHE)")
+    print("=" * 70)
+
+    feature_files = sorted(list(TRAIN_FEATURES_DIR.glob("Train_*_features.npz")))
+    if not feature_files:
+        print(f"[!] Không tìm thấy feature cache nào trong {TRAIN_FEATURES_DIR}.")
+        print("    Vui lòng chạy 'python scripts/train_peak_detector.py' trước để sinh cache.")
         return
-
-    print(f"[*] Bắt đầu đóng gói Multimodal CRNN dataset từ {len(annotation_files)} file...")
 
     all_x_mel = []
     all_x_he = []
     all_y = []
-    total_events_count = 0
 
-    for file_idx, npz_path in enumerate(annotation_files, 1):
-        data = load_annotation(npz_path)
-        audio_name = str(data.get("audio_filename", f"{npz_path.stem.replace('_labels', '')}.wav"))
-        wav_path = config.TRAIN_AUDIO_DIR / audio_name
+    print(f"[*] Tìm thấy {len(feature_files)} tệp đặc trưng. Tiến hành nạp và cắt cửa sổ...")
 
-        if not wav_path.is_file():
-            print(f"    [!] Cảnh báo: Không tìm thấy file WAV gốc '{wav_path.name}'. Bỏ qua file này.")
+    for feat_path in feature_files:
+        # Lấy tên file tương ứng (ví dụ: Train_0)
+        stem = feat_path.name.replace("_features.npz", "")
+        annot_path = config.TRAIN_ANNOTATION_DIR / f"{stem}_labels.npz"
+
+        if not annot_path.is_file():
+            print(f"    [!] Cảnh báo: Thiếu file nhãn {annot_path.name}. Hãy chạy scripts/annotate_train.py trước. Bỏ qua.")
             continue
 
-        # 1. Nạp âm thanh và tính Log-Mel Spectrogram (128, T)
-        audio, _ = load_audio(wav_path, target_sr=config.SAMPLE_RATE)
-        log_mel = compute_log_mel_spectrogram(audio)
+        # 1. Nạp trực tiếp đặc trưng (Zero STFT re-computation)
+        with np.load(str(feat_path)) as feat_data:
+            log_mel = feat_data["log_mel"]          # (128, T)
+            h_event_sum = feat_data["h_event_sum"]  # (T,)
 
-        # 2. Nạp H_event_sum (1D) và nhãn đã gán
-        h_event_sum = data["h_event_sum"]
-        binary_labels = data["binary_labels"]
-        total_frames = len(h_event_sum)
+        # 2. Nạp nhãn gán thủ công
+        annot_data = load_annotation(annot_path)
+        binary_labels = annot_data["binary_labels"]
 
-        # Cân chỉnh độ dài nếu có sai lệch nhỏ ở frame cuối
-        min_len = min(log_mel.shape[1], total_frames, len(binary_labels))
+        # Đồng bộ độ dài an toàn
+        min_len = min(log_mel.shape[1], len(h_event_sum), len(binary_labels))
         log_mel = log_mel[:, :min_len]
         h_event_sum = h_event_sum[:min_len]
         binary_labels = binary_labels[:min_len]
-        total_frames = min_len
-
-        peak_frames = np.where(binary_labels == 1)[0]
-        total_events_count += len(peak_frames)
 
         # 3. Làm mịn nhãn Gaussian
         if config.ANNOTATION_SMOOTHING_ENABLED:
+            peak_frames = np.where(binary_labels == 1)[0]
             target_labels = create_gaussian_label(
                 peak_frames=peak_frames,
-                total_frames=total_frames,
+                total_frames=min_len,
                 sigma=config.ANNOTATION_GAUSSIAN_SIGMA
             )
         else:
             target_labels = binary_labels.astype(np.float32)
 
-        # 4. Cắt cửa sổ trượt đồng thời cả Mel và H_event_sum
-        X_mel_file, X_he_file, Y_file = extract_hybrid_windows(
-            log_mel_seq=log_mel,
-            h_event_sum_seq=h_event_sum,
-            label_seq=target_labels,
-            window_length=config.SEQUENCE_LENGTH,
+        # 4. Cắt cửa sổ trượt (L=128, Hop=64)
+        x_mel_wins, x_he_wins, y_wins = extract_hybrid_windows(
+            log_mel=log_mel,
+            h_event_sum=h_event_sum,
+            labels=target_labels,
+            window_len=config.SEQUENCE_LENGTH,
             hop_size=config.SEQUENCE_HOP
         )
 
-        if len(X_mel_file) > 0:
-            all_x_mel.append(X_mel_file)
-            all_x_he.append(X_he_file)
-            all_y.append(Y_file)
+        all_x_mel.append(x_mel_wins)
+        all_x_he.append(x_he_wins)
+        all_y.append(y_wins)
+        print(f"    [✓] {stem:<10} -> {len(y_wins)} windows ({config.SEQUENCE_LENGTH} frames)")
 
-        print(f"  [{file_idx}/{len(annotation_files)}] {audio_name}: "
-              f"{total_frames} frames -> {len(X_mel_file)} sequences (Events: {len(peak_frames)})")
-
-    if not all_x_mel:
-        print("[!] Không tạo được sample nào. Kiểm tra lại dữ liệu đầu vào.")
+    if not all_y:
+        print("[!] Không có dữ liệu hợp lệ để đóng gói. Dừng.")
         return
 
-    # Ghép toàn bộ samples
-    X_mel_train = np.concatenate(all_x_mel, axis=0)  # Shape: (N, 1, 128, L)
-    X_he_train = np.concatenate(all_x_he, axis=0)    # Shape: (N, 1, L)
-    Y_train = np.concatenate(all_y, axis=0)          # Shape: (N, L)
+    # 5. Gom cụm toàn bộ dataset
+    x_mel_train = np.concatenate(all_x_mel, axis=0)
+    x_he_train = np.concatenate(all_x_he, axis=0)
+    y_train = np.concatenate(all_y, axis=0)
 
-    # Tính positive weight phục vụ hàm mất mát
-    num_pos = np.sum(Y_train > 0.1)
-    num_neg = Y_train.size - num_pos
-    pos_weight = float(num_neg / max(1, num_pos))
+    # 6. Tính pos_weight cho hàm mất mát
+    pos_samples = np.sum(y_train > 0.5)
+    total_elements = y_train.size
+    neg_samples = total_elements - pos_samples
+    pos_weight = float(neg_samples / max(1, pos_samples))
 
-    output_dataset_file = config.CRNN_DATASET_DIR / "crnn_train.npz"
+    output_dataset = config.CRNN_DATASET_DIR / "crnn_train.npz"
+    config.CRNN_DATASET_DIR.mkdir(parents=True, exist_ok=True)
+
     np.savez_compressed(
-        str(output_dataset_file),
-        X_mel_train=X_mel_train,
-        X_he_train=X_he_train,
-        Y_train=Y_train,
-        pos_weight=pos_weight,
-        sequence_length=config.SEQUENCE_LENGTH,
-        sequence_hop=config.SEQUENCE_HOP,
-        total_samples=len(Y_train),
-        total_events=total_events_count
+        str(output_dataset),
+        X_mel_train=x_mel_train,
+        X_he_train=x_he_train,
+        Y_train=y_train,
+        pos_weight=pos_weight
     )
 
-    print("\n" + "=" * 60)
-    print(f"[✓] ĐÃ ĐÓNG GÓI THÀNH CÔNG MULTIMODAL CRNN DATASET!")
-    print(f"    - File lưu trữ: {output_dataset_file}")
-    print(f"    - Shape X_mel_train: {X_mel_train.shape} (N, 1, N_mels, L)")
-    print(f"    - Shape X_he_train:  {X_he_train.shape} (N, 1, L)")
-    print(f"    - Shape Y_train:     {Y_train.shape} (N, L)")
-    print(f"    - Tổng số mẫu (sequences): {len(Y_train)}")
-    print(f"    - Pos Weight: {pos_weight:.2f}")
-    print("=" * 60)
+    print("\n" + "=" * 70)
+    print(f"[✓] ĐÃ ĐÓNG GÓI THÀNH CÔNG: {output_dataset}")
+    print(f"  - X_mel_train Shape : {x_mel_train.shape} (N, 1, 128, L)")
+    print(f"  - X_he_train Shape  : {x_he_train.shape} (N, 1, L)")
+    print(f"  - Y_train Shape     : {y_train.shape} (N, L)")
+    print(f"  - Class pos_weight  : {pos_weight:.2f}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
-    build_train_dataset()
+    main()
