@@ -28,3 +28,7 @@ outputs/logs/
 # Raw audio dataset
 data/train/*.wav
 data/test/*.wav
+
+!models/peak_detection/peak_params.json
+!data/train/label.txt
+!data/test/label.txt

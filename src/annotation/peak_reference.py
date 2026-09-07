@@ -3,42 +3,44 @@
 Peak Reference Detection Module
 ===============================================================================
 
-Generates baseline reference peak locations on H_event_sum for annotation guidance.
-Strictly used as an annotation assistant and baseline comparison.
+Generates baseline reference peak locations on H_event_sum using optimized P*, D*.
 """
 
+import json
 from typing import Tuple, Optional
 import numpy as np
 from scipy.signal import find_peaks
 import config
 
 
+def load_peak_parameters() -> Tuple[float, int]:
+    """Tải P*, D* từ models/peak_detection/peak_params.json."""
+    if config.PEAK_PARAMS_PATH.is_file():
+        try:
+            with open(config.PEAK_PARAMS_PATH, "r", encoding="utf-8") as f:
+                params = json.load(f)
+                return float(params["prominence"]), int(params["distance"])
+        except Exception:
+            pass
+    return config.DEFAULT_PEAK_PROMINENCE, config.DEFAULT_PEAK_DISTANCE_FRAMES
+
+
 def detect_reference_peaks(
     h_event_sum: np.ndarray,
-    prominence: Optional[float] = config.PEAK_PROMINENCE,
-    distance: Optional[int] = config.PEAK_DISTANCE_FRAMES
+    prominence: Optional[float] = None,
+    distance: Optional[int] = None
 ) -> Tuple[np.ndarray, dict]:
     """
-    Detect peaks on the H_event_sum envelope using configured prominence and distance.
-
-    Parameters
-    ----------
-    h_event_sum : np.ndarray
-        1D event envelope array of shape (T,).
-    prominence : float, optional
-        Minimum peak prominence relative to baseline. Defaults to config.PEAK_PROMINENCE.
-    distance : int, optional
-        Minimum frame distance between adjacent peaks. Defaults to config.PEAK_DISTANCE_FRAMES.
-
-    Returns
-    -------
-    peaks : np.ndarray
-        1D array containing indices of detected peak frames.
-    properties : dict
-        Properties dictionary returned by scipy.signal.find_peaks (prominences, etc.).
+    Phát hiện đỉnh trên H_event_sum sử dụng P*, D* đã được tối ưu từ Train set.
     """
     if h_event_sum.ndim != 1:
         raise ValueError(f"Expected 1D envelope, got shape {h_event_sum.shape}")
+
+    # Nếu không truyền thủ công, tự động load P*, D* tối ưu
+    if prominence is None or distance is None:
+        opt_p, opt_d = load_peak_parameters()
+        prominence = prominence if prominence is not None else opt_p
+        distance = distance if distance is not None else opt_d
 
     peaks, properties = find_peaks(
         h_event_sum,

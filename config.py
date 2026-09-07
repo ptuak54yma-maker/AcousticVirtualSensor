@@ -93,9 +93,18 @@ NNLS_MAX_ITER = 20000
 # =============================================================================
 # 6. BASELINE PEAK DETECTION PARAMETERS
 # =============================================================================
-ENABLE_PEAK_DETECTION = True
-PEAK_PROMINENCE = 0.5
-PEAK_DISTANCE_FRAMES = 3
+
+PEAK_DETECTION_DIR = MODEL_DIR / "peak_detection"
+PEAK_PARAMS_PATH = PEAK_DETECTION_DIR / "peak_params.json"
+PEAK_DETECTION_DIR.mkdir(parents=True, exist_ok=True)
+
+# Giá trị mặc định dự phòng (Fallback defaults) nếu chưa chạy Grid Search
+DEFAULT_PEAK_PROMINENCE = 0.5
+DEFAULT_PEAK_DISTANCE_FRAMES = 3
+
+# Grid Search Hyperparameter Space
+GRID_SEARCH_PROMINENCES = (0.01, 1.0, 50)  # np.linspace(start, stop, num)
+GRID_SEARCH_DISTANCES = (1, 51, 1)          # np.arange(start, stop, step)
 
 # =============================================================================
 # 7. CRNN SEQUENCE & ARCHITECTURE PARAMETERS
