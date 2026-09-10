@@ -2,7 +2,7 @@
 scripts/visualize_activations.py
 
 Hiển thị ma trận kích hoạt H (48 x T) cho tất cả các file Train_*.wav và Bowl_*.wav.
-Pipeline: load_audio -> compute_stft -> log_compression -> NNLS.
+Pipeline: load_audio -> compute_stft -> log_compression -> solve_nnls_batch.
 Phân định 3 nhóm thành phần rõ ràng:
 - Event: 1 -> 24
 - Bowl Noise: 25 -> 36
@@ -12,7 +12,7 @@ Phân định 3 nhóm thành phần rõ ràng:
 import sys
 from pathlib import Path
 
-# Đảm bảo đường dẫn gốc được nhận diện chính xác
+# Tự động nhận diện thư mục gốc của project
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -20,13 +20,14 @@ if str(PROJECT_ROOT) not in sys.path:
 import argparse
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.optimize import nnls
+from matplotlib.colors import LogNorm
 
 import config
 from src.audio.loader import load_audio
 from src.preprocessing.stft import compute_stft
 from src.preprocessing.log_compression import log_compression
 from src.nmf.dictionary import load_dictionary
+from src.nmf.nnls import solve_nnls_batch
 
 
 def parse_args():
@@ -43,57 +44,67 @@ def parse_args():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default=str(config.FIGURES_DIR / "activations"),
+        default=str(config.FIGURES_DIR / "activations") if hasattr(config, "FIGURES_DIR") else str(PROJECT_ROOT / "outputs" / "figures" / "activations"),
         help="Thư mục lưu ảnh kết quả (mặc định: outputs/figures/activations/)",
     )
     return parser.parse_args()
 
 
-def solve_nnls_matrix(W, V):
+def plot_activation_spectrogram(H, filename, output_path, total_duration):
     """
-    Giải bài toán Non-Negative Least Squares cho từng frame:
-    min ||V[:, t] - W * H[:, t]||_2 với H[:, t] >= 0
-    W: (n_bins, n_components) = (1025, 48)
-    V: (n_bins, n_frames)
-    Trả về H: (n_components, n_frames) = (48, n_frames)
-    """
-    n_components = W.shape[1]
-    n_frames = V.shape[1]
-    H = np.zeros((n_components, n_frames), dtype=np.float32)
-
-    for t in range(n_frames):
-        h_t, _ = nnls(W, V[:, t])
-        H[:, t] = h_t
-
-    return H
-
-
-def plot_activation_spectrogram(H, filename, output_path, sr=config.SAMPLE_RATE, hop_length=config.HOP_LENGTH):
-    """
-    Vẽ phổ ma trận kích hoạt H(k, t) với đường phân vùng 3 nhóm rõ rệt.
-    Trục X: Thời gian (s).
-    Trục Y: NMF Components (1 -> 48).
+    Vẽ phổ ma trận kích hoạt H(k, t) bằng pcolormesh kết hợp LogNorm:
+    - Trục thời gian trải đều đúng tổng thời lượng thực tế của file âm thanh (total_duration).
+    - LogNorm giúp phân bổ dải động rộng: H=0 là nền tối, kích hoạt yếu có màu tím/cam, kích hoạt mạnh rực sáng.
+    - Mỗi ô component dày chuẩn xác đúng 1/48 chiều cao phổ.
     """
     n_components, n_frames = H.shape
-    duration = n_frames * hop_length / sr
 
-    fig, ax = plt.subplots(figsize=(15, 8), dpi=300)
+    # 1. Trục thời gian (giây) và trục Component (Y)
+    time_edges = np.linspace(0.0, total_duration, n_frames + 1)
+    comp_edges = np.arange(0.5, n_components + 1.5, 1.0)
 
-    # Hiển thị heatmap: component 1 ở trên cùng, component 48 ở dưới cùng
-    im = ax.imshow(
+    fig, ax = plt.subplots(figsize=(16, 9), dpi=300)
+
+    # 2. Thiết lập Log Normalization trên tập giá trị dương H > 0
+    positive_values = H[H > 0]
+
+    if positive_values.size > 0:
+        v_min = np.percentile(positive_values, 5)
+        v_max = np.percentile(positive_values, 99.5)
+
+        if v_min >= v_max:
+            v_min = positive_values.min()
+            v_max = positive_values.max()
+        if v_min <= 0:
+            v_min = 1e-6
+    else:
+        v_min = 1e-6
+        v_max = 1.0
+
+    # Cấu hình cmap để các giá trị <= 0 hoặc dưới v_min ăn khớp màu đen nền tối
+    cmap = plt.get_cmap("magma").copy()
+    cmap.set_under(cmap(0.0))
+
+    # 3. Vẽ bằng pcolormesh với norm=LogNorm
+    mesh = ax.pcolormesh(
+        time_edges,
+        comp_edges,
         H,
-        aspect="auto",
-        origin="upper",
-        cmap="inferno",
-        extent=[0, duration, 48.5, 0.5],
-        interpolation="nearest"
+        cmap=cmap,
+        norm=LogNorm(vmin=v_min, vmax=v_max),
+        shading="flat",
+        edgecolors="none"
     )
 
-    # Đường phân cách ngang giữa 3 nhóm
-    ax.axhline(24.5, color="#00FFFF", linestyle="-", linewidth=2.0, alpha=0.95)
-    ax.axhline(36.5, color="#39FF14", linestyle="-", linewidth=2.0, alpha=0.95)
+    # Đảo ngược trục Y: Component 1 ở trên đỉnh, Component 48 ở đáy
+    ax.set_ylim(48.5, 0.5)
+    ax.set_xlim(0.0, total_duration)
 
-    # Nhãn vùng ở trục Y phụ bên phải (Secondary Y-axis)
+    # 4. Đường phân cách ngang giữa 3 nhóm
+    ax.axhline(24.5, color="#00E5FF", linestyle="--", linewidth=1.8, alpha=0.95)
+    ax.axhline(36.5, color="#76FF03", linestyle="--", linewidth=1.8, alpha=0.95)
+
+    # 5. Cấu hình nhãn vùng ở trục Y phụ bên phải (Secondary Y-axis)
     ax_labels = ax.twinx()
     ax_labels.set_ylim(ax.get_ylim())
     ax_labels.set_yticks([12.5, 30.5, 42.5])
@@ -104,15 +115,17 @@ def plot_activation_spectrogram(H, filename, output_path, sr=config.SAMPLE_RATE,
     ], fontsize=11, fontweight="bold")
     ax_labels.tick_params(length=0)
 
-    # Cấu hình trục Y bên trái và trục X
+    # 6. Cấu hình trục chính
     ax.set_ylabel("NMF Component Index", fontsize=12, fontweight="bold")
     ax.set_xlabel("Time (seconds)", fontsize=12, fontweight="bold")
     ax.set_yticks([1, 6, 12, 18, 24, 25, 30, 36, 37, 42, 48])
+    ax.tick_params(axis="both", labelsize=10)
     ax.set_title(f"NMF Activation Spectrogram $H(k, t)$ — {filename}", fontsize=14, pad=12, fontweight="bold")
 
-    # Colorbar
-    cbar = fig.colorbar(im, ax=ax, pad=0.14, fraction=0.046)
-    cbar.set_label("Activation Magnitude $H_{k}(t)$", fontsize=11, fontweight="bold")
+    # Colorbar với log format
+    cbar = fig.colorbar(mesh, ax=ax, pad=0.14, fraction=0.046)
+    cbar.set_label("Activation Magnitude $H_{k}(t)$ (Log Scale)", fontsize=11, fontweight="bold")
+    cbar.ax.tick_params(labelsize=10)
 
     plt.tight_layout()
     plt.savefig(output_path, bbox_inches="tight")
@@ -122,29 +135,29 @@ def plot_activation_spectrogram(H, filename, output_path, sr=config.SAMPLE_RATE,
 
 def process_file(audio_path, W_standard, output_dir):
     """
-    Chạy pipeline: Audio -> STFT -> Log Compression -> NNLS -> Vẽ hình
+    Chạy pipeline đồng bộ: Audio -> STFT -> Log Compression -> solve_nnls_batch -> Vẽ hình
     """
-    # 1. Đọc audio
     signal, sr = load_audio(audio_path, target_sr=config.SAMPLE_RATE)
+    total_duration = len(signal) / sr
 
-    # 2. Tính STFT magnitude spectrum
     mag_spec = compute_stft(
         signal,
         n_fft=config.N_FFT,
         hop_length=config.HOP_LENGTH,
-        window=config.WINDOW
+        window=config.WINDOW_FUNCTION
     )
 
-    # 3. Log compression
-    V = log_compression(mag_spec, gamma=config.GAMMA)
+    V = log_compression(
+        mag_spec,
+        spec_type=config.SPECTROGRAM_TYPE,
+        epsilon=config.LOG_EPSILON
+    )
 
-    # 4. NNLS với W_standard (1025 x 48) -> H (48, T)
-    H = solve_nnls_matrix(W_standard, V)
+    H = solve_nnls_batch(W_standard, V)
 
-    # 5. Vẽ và lưu ảnh
     out_filename = f"{audio_path.stem}_H.png"
     out_path = Path(output_dir) / out_filename
-    plot_activation_spectrogram(H, audio_path.name, out_path, sr=sr, hop_length=config.HOP_LENGTH)
+    plot_activation_spectrogram(H, audio_path.name, out_path, total_duration=total_duration)
 
 
 def main():
@@ -157,27 +170,36 @@ def main():
         raise FileNotFoundError(f"Không tìm thấy file {w_path}. Hãy chạy `python scripts/train_nmf.py` trước!")
 
     W_standard = load_dictionary(w_path)
-    print(f" Loaded W_standard shape: {W_standard.shape}")
+    print(f"Loaded W_standard shape: {W_standard.shape}")
 
-    train_dir = config.DATA_TRAIN_DIR
+    if hasattr(config, "TRAIN_DATA_DIR"):
+        train_dir = Path(config.TRAIN_DATA_DIR)
+    elif hasattr(config, "DATA_DIR"):
+        train_dir = Path(config.DATA_DIR) / "train"
+    else:
+        train_dir = PROJECT_ROOT / "data" / "train"
+
     files_to_process = []
 
+    train_pattern = getattr(config, "PATTERN_CRNN_TRAIN", "Train_*.wav")
+    bowl_pattern = getattr(config, "PATTERN_TEST_BOWL", "Bowl_*.wav")
+
     if args.group in ["train", "all"]:
-        files_to_process.extend(sorted(list(train_dir.glob("Train_*.wav"))))
+        files_to_process.extend(sorted(list(train_dir.glob(train_pattern))))
 
     if args.group in ["bowl", "all"]:
-        files_to_process.extend(sorted(list(train_dir.glob("Bowl_*.wav"))))
+        files_to_process.extend(sorted(list(train_dir.glob(bowl_pattern))))
 
     if not files_to_process:
-        print(f"Không tìm thấy file Train_*.wav hoặc Bowl_*.wav nào trong {train_dir}")
+        print(f"Không tìm thấy file nào khớp với '{train_pattern}' hoặc '{bowl_pattern}' trong {train_dir}")
         return
 
-    print(f" Bắt đầu xử lý {len(files_to_process)} file âm thanh...")
+    print(f"Bắt đầu xử lý {len(files_to_process)} file âm thanh...")
     for idx, fpath in enumerate(files_to_process, 1):
         print(f"[{idx}/{len(files_to_process)}] Đang xử lý: {fpath.name}")
         process_file(fpath, W_standard, out_dir)
 
-    print(f"\n Hoàn tất! Tất cả hình ảnh phổ activation đã được lưu tại:\n {out_dir.resolve()}")
+    print(f"\nHoàn tất! Tất cả hình ảnh phổ activation đã được lưu tại:\n{out_dir.resolve()}")
 
 
 if __name__ == "__main__":

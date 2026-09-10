@@ -26,26 +26,32 @@ class FrequencyDownsampler2D(nn.Module):
     strictly preserving the temporal length L.
     """
 
-    def __init__(self, in_channels: int = 1, out_channels: int = 32):
+    def __init__(
+        self,
+        in_channels: int = 1,
+        out_channels: int = config.CRNN_MEL_CHANNELS
+    ):
         super().__init__()
+        k = config.CRNN_CONV2D_KERNEL_SIZE
+        p = k // 2
         
         # Layer 1: (B, 1, 128, L) -> (B, 16, 64, L)
-        self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=(3, 3), padding=(1, 1))
+        self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=(k, k), padding=(p, p))
         self.bn1 = nn.BatchNorm2d(16)
         self.pool1 = nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1))
 
         # Layer 2: (B, 16, 64, L) -> (B, 32, 32, L)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=(3, 3), padding=(1, 1))
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=(k, k), padding=(p, p))
         self.bn2 = nn.BatchNorm2d(32)
         self.pool2 = nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1))
 
         # Layer 3: (B, 32, 32, L) -> (B, 32, 16, L)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=(3, 3), padding=(1, 1))
+        self.conv3 = nn.Conv2d(32, 32, kernel_size=(k, k), padding=(p, p))
         self.bn3 = nn.BatchNorm2d(32)
         self.pool3 = nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1))
 
         # Layer 4: (B, 32, 16, L) -> (B, out_channels, 8, L)
-        self.conv4 = nn.Conv2d(32, out_channels, kernel_size=(3, 3), padding=(1, 1))
+        self.conv4 = nn.Conv2d(32, out_channels, kernel_size=(k, k), padding=(p, p))
         self.bn4 = nn.BatchNorm2d(out_channels)
         self.pool4 = nn.MaxPool2d(kernel_size=(2, 1), stride=(2, 1))
 
@@ -75,11 +81,18 @@ class EventEnvelopeEncoder1D(nn.Module):
     1D CNN branch to extract local dynamics from the H_event_sum envelope.
     """
 
-    def __init__(self, in_channels: int = 1, out_channels: int = 16):
+    def __init__(
+        self,
+        in_channels: int = config.CRNN_INPUT_FEATURES,
+        out_channels: int = config.CRNN_HE_CHANNELS
+    ):
         super().__init__()
-        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=5, padding=2)
+        k1 = config.CRNN_HE_CONV1_KERNEL_SIZE
+        k2 = config.CRNN_HE_CONV2_KERNEL_SIZE
+
+        self.conv1 = nn.Conv1d(in_channels, 16, kernel_size=k1, padding=k1 // 2)
         self.bn1 = nn.BatchNorm1d(16)
-        self.conv2 = nn.Conv1d(16, out_channels, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(16, out_channels, kernel_size=k2, padding=k2 // 2)
         self.bn2 = nn.BatchNorm1d(out_channels)
         self.dropout = nn.Dropout(config.CRNN_DROPOUT)
 
@@ -102,8 +115,8 @@ class HybridCRNN(nn.Module):
 
     def __init__(
         self,
-        mel_channels: int = 32,
-        he_channels: int = 16,
+        mel_channels: int = config.CRNN_MEL_CHANNELS,
+        he_channels: int = config.CRNN_HE_CHANNELS,
         rnn_hidden_size: int = config.RNN_HIDDEN_SIZE,
         rnn_layers: int = config.RNN_LAYERS,
         bidirectional: bool = config.RNN_BIDIRECTIONAL,
@@ -116,8 +129,7 @@ class HybridCRNN(nn.Module):
         self.he_branch = EventEnvelopeEncoder1D(in_channels=config.CRNN_INPUT_FEATURES, out_channels=he_channels)
 
         # 2. Recurrent Temporal Modeling
-        # Total feature dimension at each frame t after concatenation
-        total_feat_dim = mel_channels + he_channels  # e.g., 32 + 16 = 48
+        total_feat_dim = mel_channels + he_channels  # 32 + 16 = 48
         
         self.gru = nn.GRU(
             input_size=total_feat_dim,
@@ -133,10 +145,10 @@ class HybridCRNN(nn.Module):
         gru_out_dim = rnn_hidden_size * num_directions
 
         self.classifier = nn.Sequential(
-            nn.Linear(gru_out_dim, 32),
+            nn.Linear(gru_out_dim, config.CRNN_CLASSIFIER_HIDDEN_SIZE),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 1)  # 1 logit per frame
+            nn.Linear(config.CRNN_CLASSIFIER_HIDDEN_SIZE, 1)  # 1 logit per frame
         )
 
     def forward(self, x_mel: torch.Tensor, x_he: torch.Tensor) -> torch.Tensor:
@@ -155,20 +167,14 @@ class HybridCRNN(nn.Module):
         logits : torch.Tensor
             Unnormalized log-odds of shape (B, L) for BCEWithLogitsLoss.
         """
-        # Step 1: Forward feature branches
         feat_mel = self.mel_branch(x_mel)  # Shape: (B, C_mel, L)
         feat_he = self.he_branch(x_he)     # Shape: (B, C_he, L)
 
-        # Step 2: Concatenate features along channel axis
         fused = torch.cat([feat_mel, feat_he], dim=1)  # Shape: (B, C_mel + C_he, L)
-
-        # Step 3: Permute to (B, L, Features) for GRU batch_first=True
         fused = fused.permute(0, 2, 1)  # Shape: (B, L, 48)
 
-        # Step 4: Temporal Modeling with BiGRU
         gru_out, _ = self.gru(fused)    # Shape: (B, L, hidden_size * num_directions)
 
-        # Step 5: Frame-wise Logits Prediction
         logits = self.classifier(gru_out)  # Shape: (B, L, 1)
         logits = logits.squeeze(-1)        # Shape: (B, L)
 

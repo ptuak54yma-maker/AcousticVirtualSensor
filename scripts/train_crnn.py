@@ -2,6 +2,10 @@
 ===============================================================================
 Script: Train Hybrid CRNN Model (scripts/train_crnn.py)
 ===============================================================================
+
+Loads the packed dataset from data/datasets/crnn_train.npz,
+splits into train/val subsets using config.CRNN_VALIDATION_SPLIT,
+and trains the HybridCRNN model saving weights to config.CRNN_MODEL_PATH.
 """
 
 import sys
@@ -22,6 +26,10 @@ from src.crnn.trainer import CRNNTrainer
 
 
 def main():
+    print("=" * 70)
+    print("GIAI ĐOẠN 6: HUẤN LUYỆN MÔ HÌNH HYBRID CRNN")
+    print("=" * 70)
+
     dataset_file = config.CRNN_DATASET_DIR / "crnn_train.npz"
     if not dataset_file.is_file():
         print(f"[!] Không tìm thấy tập dataset: {dataset_file}")
@@ -36,16 +44,17 @@ def main():
     pos_weight = float(data.get("pos_weight", 1.0))
 
     full_dataset = HybridCRNNDataset(x_mel, x_he, y)
-    val_size = max(1, int(0.15 * len(full_dataset)))
+    val_size = max(1, int(config.CRNN_VALIDATION_SPLIT * len(full_dataset)))
     train_size = len(full_dataset) - val_size
 
     torch.manual_seed(config.CRNN_RANDOM_SEED)
-    train_set, val_set = random_split(full_dataset, [train_size, val_size])
+    generator = torch.Generator().manual_seed(config.CRNN_RANDOM_SEED)
+    train_set, val_set = random_split(full_dataset, [train_size, val_size], generator=generator)
 
     train_loader = DataLoader(train_set, batch_size=config.CRNN_BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=config.CRNN_BATCH_SIZE, shuffle=False)
 
-    print(f"[*] Khởi tạo mô hình Hybrid CRNN (Train: {train_size}, Val: {val_size})...")
+    print(f"[*] Khởi tạo Hybrid CRNN (Train samples: {train_size}, Val samples: {val_size})...")
     model = HybridCRNN()
     trainer = CRNNTrainer(model=model, pos_weight=pos_weight)
 
@@ -56,7 +65,10 @@ def main():
         epochs=config.CRNN_EPOCHS,
         save_path=config.CRNN_MODEL_PATH
     )
+
+    print("\n" + "=" * 70)
     print(f"[✓] Huấn luyện thành công! Trọng số đã lưu tại: {config.CRNN_MODEL_PATH}")
+    print("=" * 70)
 
 
 if __name__ == "__main__":

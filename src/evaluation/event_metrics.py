@@ -6,15 +6,16 @@ Event-Level Evaluation Metrics Module
 
 from typing import Dict, List, Union
 import numpy as np
+import config
 
 
 def compute_event_metrics(
     true_event_frames: Union[List[int], np.ndarray],
     pred_event_frames: Union[List[int], np.ndarray],
-    tolerance_frames: int = 3
+    tolerance_frames: int = config.EVENT_MATCH_TOLERANCE_FRAMES
 ) -> Dict[str, float]:
     """
-    Match predicted events against true event frames within a tolerance window (e.g., +/- 3 frames ~ 69.6 ms).
+    Match predicted events against true event frames within a tolerance window.
     """
     true_frames = list(sorted(true_event_frames))
     pred_frames = list(sorted(pred_event_frames))
@@ -46,5 +47,6 @@ def compute_event_metrics(
         "event_fn": fn,
         "event_precision": float(precision),
         "event_recall": float(recall),
-        "event_f1": float(f1)
+        "event_f1": float(f1),
+        "tolerance_frames": tolerance_frames
     }
