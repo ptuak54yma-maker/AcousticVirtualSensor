@@ -22,18 +22,18 @@ Interaction Controls:
 
 from pathlib import Path
 import sys
-from typing import Optional, Set
+
+# Lớp bảo vệ: Tự động bổ sung thư mục gốc vào sys.path nếu chạy trực tiếp file này
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from typing import List, Optional, Set
 import time
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Button
 import matplotlib.animation as animation
-
-# Allow this module to be imported/run from the repository without relying on
-# the current working directory to locate the root-level config.py.
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 import config
 from src.audio.framing import frame_to_time, time_to_frame
@@ -75,28 +75,23 @@ class InteractiveAnnotator:
         self.sample_rate = sample_rate
         self.sync_offset = sync_offset
 
-        # Reference peaks are immutable visual guides. Confirmed peaks are the
-        # editable copy used as the final annotation output.
+        # 1. Tách biệt 2 tập peak: Reference bất biến vs Confirmed tương tác
         self.reference_peaks: Set[int] = set(reference_peaks) if reference_peaks is not None else set()
         self.peak_detect_count = len(self.reference_peaks)
         self.confirmed_peaks: Set[int] = set(self.reference_peaks)
 
-        # Normalized time axis on the STFT frame grid.
+        # Trục thời gian chuẩn hóa
         self.frame_indices = np.arange(self.total_frames)
-        self.time_axis = frame_to_time(
-            self.frame_indices,
-            hop_length=config.HOP_LENGTH,
-            sr=self.sample_rate,
-        )
+        self.time_axis = frame_to_time(self.frame_indices, hop_length=config.HOP_LENGTH, sr=self.sample_rate)
         self.max_time = float(self.time_axis[-1]) if len(self.time_axis) > 0 else 0.0
 
-        # Playback state uses a monotonic clock and keeps the audio start time
-        # separate from the displayed cursor time.
+        # 2. Playback State sử dụng clock monotonic và mốc audio thực tế
         self.is_playing = False
         self.audio_start_time = 0.0
         self.playback_start_time = 0.0
         self.current_cursor_time = 0.0
 
+        # Giao diện Matplotlib
         self.fig, self.ax = plt.subplots(figsize=(15, 7))
         plt.subplots_adjust(bottom=0.20, top=0.88)
 
@@ -127,6 +122,7 @@ class InteractiveAnnotator:
                 label=f"Prominence P* ({self.prominence_threshold:.2f})"
             )
 
+        # Con chạy dọc (animated=True cho blit 60 FPS)
         self.cursor_line = self.ax.axvline(
             x=self.current_cursor_time,
             color="#2ca02c",
@@ -142,6 +138,7 @@ class InteractiveAnnotator:
         self.ax.grid(True, linestyle=":", alpha=0.6)
         self.ax.set_xlim(self.time_axis[0], self.time_axis[-1])
 
+        # Vẽ các marker reference và confirmed
         self._draw_reference_peaks()
         self._redraw_confirmed_peaks()
         self.ax.legend(loc="upper right")
@@ -175,9 +172,9 @@ class InteractiveAnnotator:
         self.fig.canvas.draw_idle()
 
     def _draw_reference_peaks(self):
-        """Draw immutable P*, D* reference peaks as a separate visual layer."""
+        """Vẽ cố định các đỉnh tham chiếu P*, D* (Tam giác xám, zorder thấp hơn)."""
         if len(self.reference_peaks) > 0:
-            ref_list = sorted(self.reference_peaks)
+            ref_list = sorted(list(self.reference_peaks))
             times = self.time_axis[ref_list]
             amps = self.h_event_sum[ref_list]
 
@@ -193,13 +190,13 @@ class InteractiveAnnotator:
             )
 
     def _redraw_confirmed_peaks(self):
-        """Draw editable user-confirmed peaks as prominent markers."""
+        """Vẽ lớp nhãn người dùng xác nhận (Hình tròn đỏ nổi bật, zorder cao)."""
         if self.confirmed_points is not None:
             self.confirmed_points.remove()
             self.confirmed_points = None
 
         if len(self.confirmed_peaks) > 0:
-            peak_list = sorted(self.confirmed_peaks)
+            peak_list = sorted(list(self.confirmed_peaks))
             times = self.time_axis[peak_list]
             amps = self.h_event_sum[peak_list]
 
@@ -222,24 +219,19 @@ class InteractiveAnnotator:
             return
 
         click_time = event.xdata
-        if click_time is None or self.total_frames == 0:
+        if click_time is None:
             return
 
-        snapped_frame = int(
-            time_to_frame(
-                click_time,
-                hop_length=config.HOP_LENGTH,
-                sr=self.sample_rate,
-            )
-        )
+        # Snap tọa độ click về frame và thời gian frame chuẩn xác
+        snapped_frame = int(time_to_frame(click_time, hop_length=config.HOP_LENGTH, sr=self.sample_rate))
         snapped_frame = int(np.clip(snapped_frame, 0, self.total_frames - 1))
         snapped_time = float(self.time_axis[snapped_frame])
 
-        # LEFT CLICK: seek audio/cursor only.
+        # CHUỘT TRÁI: SEEK AUDIO & CURSOR (Không sửa annotation)
         if event.button == 1:
             self._seek_to(snapped_time)
 
-        # RIGHT CLICK: add/remove only user-confirmed peaks.
+        # CHUỘT PHẢI: THÊM / XÓA USER PEAK
         elif event.button == 3:
             existing_peak_to_remove = None
             for p in self.confirmed_peaks:
@@ -258,7 +250,7 @@ class InteractiveAnnotator:
             self._redraw_confirmed_peaks()
 
     def _seek_to(self, target_time: float):
-        """Move cursor immediately and seek audio to the same timestamp."""
+        """Dịch chuyển con chạy và đồng bộ vị trí phát âm thanh tức thì."""
         was_playing = self.is_playing
         if was_playing and HAS_SOUNDDEVICE:
             sd.stop()
@@ -272,11 +264,11 @@ class InteractiveAnnotator:
             self._start_audio_stream()
 
     def _start_audio_stream(self):
-        if not HAS_SOUNDDEVICE or self.audio_samples is None or len(self.audio_samples) == 0:
+        if not HAS_SOUNDDEVICE or self.audio_samples is None:
             return
 
         start_sample = int(self.audio_start_time * self.sample_rate)
-        start_sample = int(np.clip(start_sample, 0, len(self.audio_samples) - 1))
+        start_sample = min(start_sample, len(self.audio_samples) - 1)
 
         sd.stop()
         sd.play(self.audio_samples[start_sample:], self.sample_rate)
@@ -302,16 +294,9 @@ class InteractiveAnnotator:
         if self.is_playing:
             if HAS_SOUNDDEVICE:
                 sd.stop()
-
             elapsed = time.monotonic() - self.playback_start_time
-            self.current_cursor_time = min(
-                self.audio_start_time + elapsed + self.sync_offset,
-                self.max_time,
-            )
-            self.audio_start_time = max(
-                0.0,
-                self.current_cursor_time - self.sync_offset,
-            )
+            self.current_cursor_time = min(self.audio_start_time + elapsed + self.sync_offset, self.max_time)
+            self.audio_start_time = self.current_cursor_time
             self.is_playing = False
             self.cursor_line.set_xdata([self.current_cursor_time, self.current_cursor_time])
             self.fig.canvas.draw_idle()
