@@ -4,17 +4,17 @@ Manual Frame-Level Annotation Tool (Matplotlib Interactive GUI)
 ===============================================================================
 
 Provides a dedicated annotation GUI separating visual references from user labels:
-- Reference Peaks (P*, D*): Visual guide only (non-interactive, immutable).
-- Confirmed Peaks: User ground truth (interactive, editable).
-- Audio Playback & Seeking: Synchronized using monotonic timeline and frame snap.
+- Reference Peaks (P*, D*): Visual guide (grey triangles) - immutable, non-interactive.
+- Confirmed Peaks: User ground truth (red circles) - dynamic blit, toggles instantly.
+- Playback & Seeking: Audio-synchronized cursor tracking with hardware latency calibration.
 
 Interaction Controls:
-- Left-Click: Seek playback position (snaps to nearest frame; does NOT edit peaks).
-- Right-Click: Add / Remove User Peak (snaps to local maximum in search radius).
-- Key 's': Save current labels and close window.
+- Left-Click: Seek audio playback position (snaps to frame; does NOT edit peaks).
+- Right-Click: Toggle Peak (Add / Remove) - shows or hides red circle INSTANTLY.
+- Key 's': Save confirmed labels and close window.
 - Key 'r': Reset confirmed peaks to initial reference proposal.
-- Key 'c': Clear all confirmed user peaks (reference markers remain visible).
-- Key 'Space': Toggle Play / Pause audio playback.
+- Key 'c': Clear all confirmed peaks (hide all red circles; reference triangles remain).
+- Key 'Space': Toggle Play / Pause audio.
 - Button [Play]: Start / Resume playback from current cursor position.
 - Button [Pause]: Pause playback (cursor stays at current timestamp).
 - Button [Stop]: Stop playback and reset cursor to t = 0.0s.
@@ -23,7 +23,7 @@ Interaction Controls:
 from pathlib import Path
 import sys
 
-# Lớp bảo vệ: Tự động bổ sung thư mục gốc vào sys.path nếu chạy trực tiếp file này
+# Lớp bảo vệ nạp root directory vào sys.path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -47,8 +47,7 @@ except ImportError:
 
 class InteractiveAnnotator:
     """
-    Interactive Matplotlib GUI with separated Reference vs User annotation layers,
-    audio seeking via Left-Click, and peak editing via Right-Click.
+    Interactive Matplotlib GUI with instant marker toggling (Zero-lag Blit refresh).
     """
 
     def __init__(
@@ -60,6 +59,7 @@ class InteractiveAnnotator:
         ground_truth_count: Optional[int] = None,
         audio_samples: Optional[np.ndarray] = None,
         sample_rate: int = config.SAMPLE_RATE,
+        snap_radius_frames: int = 10,
         click_tolerance_frames: int = getattr(config, "ANNOTATION_CLICK_TOLERANCE_FRAMES", 4),
         search_radius_frames: int = getattr(config, "ANNOTATION_LOCAL_SEARCH_RADIUS_FRAMES", 3),
         sync_offset: float = getattr(config, "ANNOTATION_AUDIO_SYNC_OFFSET", 0.0)
@@ -67,6 +67,7 @@ class InteractiveAnnotator:
         self.filename = audio_filename
         self.h_event_sum = h_event_sum
         self.total_frames = len(h_event_sum)
+        self.snap_radius = snap_radius_frames
         self.click_tolerance = click_tolerance_frames
         self.search_radius = search_radius_frames
         self.prominence_threshold = prominence_threshold
@@ -75,28 +76,39 @@ class InteractiveAnnotator:
         self.sample_rate = sample_rate
         self.sync_offset = sync_offset
 
-        # 1. Tách biệt 2 tập peak: Reference bất biến vs Confirmed tương tác
+        # 1. Đo độ trễ phần cứng âm thanh
+        self.hardware_latency = 0.0
+        if HAS_SOUNDDEVICE:
+            try:
+                device_info = sd.query_devices(kind='output')
+                self.hardware_latency = float(device_info.get('default_low_output_latency', 0.05))
+            except Exception:
+                self.hardware_latency = 0.05
+
+        self.fft_center_offset = (config.N_FFT / 2.0) / float(self.sample_rate)
+
+        # 2. Hai tập mốc riêng biệt
         self.reference_peaks: Set[int] = set(reference_peaks) if reference_peaks is not None else set()
         self.peak_detect_count = len(self.reference_peaks)
         self.confirmed_peaks: Set[int] = set(self.reference_peaks)
 
-        # Trục thời gian chuẩn hóa
+        # Trục thời gian chuẩn
         self.frame_indices = np.arange(self.total_frames)
         self.time_axis = frame_to_time(self.frame_indices, hop_length=config.HOP_LENGTH, sr=self.sample_rate)
         self.max_time = float(self.time_axis[-1]) if len(self.time_axis) > 0 else 0.0
 
-        # 2. Playback State sử dụng clock monotonic và mốc audio thực tế
+        # Trạng thái phát âm thanh
         self.is_playing = False
         self.audio_start_time = 0.0
         self.playback_start_time = 0.0
         self.current_cursor_time = 0.0
 
-        # Giao diện Matplotlib
+        # Cửa sổ hiển thị
         self.fig, self.ax = plt.subplots(figsize=(15, 7))
         plt.subplots_adjust(bottom=0.20, top=0.88)
 
-        self.ref_points = None
-        self.confirmed_points = None
+        self.ref_line = None
+        self.confirmed_line = None
         self.cursor_line = None
         self.anim = None
 
@@ -105,6 +117,7 @@ class InteractiveAnnotator:
         self._connect_events()
 
     def _setup_plot(self):
+        # Đường kích hoạt NMF (nền tĩnh)
         self.ax.plot(
             self.time_axis,
             self.h_event_sum,
@@ -122,7 +135,7 @@ class InteractiveAnnotator:
                 label=f"Prominence P* ({self.prominence_threshold:.2f})"
             )
 
-        # Con chạy dọc (animated=True cho blit 60 FPS)
+        # Con chạy dọc phát lại (đối tượng động blit)
         self.cursor_line = self.ax.axvline(
             x=self.current_cursor_time,
             color="#2ca02c",
@@ -133,13 +146,46 @@ class InteractiveAnnotator:
             label="Playback Cursor"
         )
 
+        # Lớp 1: Reference Peaks (Tam giác xám cố định ở nền tĩnh)
+        ref_times = []
+        ref_amps = []
+        if len(self.reference_peaks) > 0:
+            ref_list = sorted(list(self.reference_peaks))
+            ref_times = self.time_axis[ref_list]
+            ref_amps = self.h_event_sum[ref_list]
+
+        (self.ref_line,) = self.ax.plot(
+            ref_times,
+            ref_amps,
+            linestyle="",
+            marker="^",
+            color="#7f7f7f",
+            markersize=7,
+            alpha=0.7,
+            zorder=4,
+            label=r"Ref Peaks ($P^*, D^*$)"
+        )
+
+        # Lớp 2: Confirmed Peaks (QUAN TRỌNG: animated=True để blit cập nhật tức thì!)
+        (self.confirmed_line,) = self.ax.plot(
+            [],
+            [],
+            linestyle="",
+            marker="o",
+            color="crimson",
+            markersize=8,
+            markeredgecolor="black",
+            markeredgewidth=0.8,
+            zorder=5,
+            animated=True,
+            label="Confirmed Peaks"
+        )
+
         self.ax.set_xlabel("Time (seconds)", fontsize=11)
         self.ax.set_ylabel("Activation Energy", fontsize=11)
         self.ax.grid(True, linestyle=":", alpha=0.6)
         self.ax.set_xlim(self.time_axis[0], self.time_axis[-1])
 
-        # Vẽ các marker reference và confirmed
-        self._draw_reference_peaks()
         self._redraw_confirmed_peaks()
         self.ax.legend(loc="upper right")
 
@@ -162,55 +208,24 @@ class InteractiveAnnotator:
 
         title_text = (
             f"File: {self.filename}  |  "
-            f"[Ref Detect (P*, D*): {self.peak_detect_count}]   "
-            f"[Ground Truth: {gt_str}]   "
-            f"[Confirmed: {cur_count}]\n"
-            f"[Left-Click]: Seek  |  [Right-Click]: Add/Remove Peak  |  "
+            f"[Ref (P*, D*): {self.peak_detect_count}]   "
+            f"[GT: {gt_str}]   "
+            f"[Confirmed: {cur_count}]   "
+            f"[Audio Latency: {self.hardware_latency*1000:.1f}ms]\n"
+            f"[Left-Click]: Seek  |  [Right-Click]: Toggle Peak (Hide/Show)  |  "
             f"[Space]: Play/Pause  |  [S]: Save  |  [R]: Reset  |  [C]: Clear"
         )
         self.ax.set_title(title_text, fontsize=11, fontweight="bold")
-        self.fig.canvas.draw_idle()
-
-    def _draw_reference_peaks(self):
-        """Vẽ cố định các đỉnh tham chiếu P*, D* (Tam giác xám, zorder thấp hơn)."""
-        if len(self.reference_peaks) > 0:
-            ref_list = sorted(list(self.reference_peaks))
-            times = self.time_axis[ref_list]
-            amps = self.h_event_sum[ref_list]
-
-            self.ref_points = self.ax.scatter(
-                times,
-                amps,
-                color="#7f7f7f",
-                marker="^",
-                s=45,
-                alpha=0.6,
-                zorder=4,
-                label=r"Ref Peaks ($P^*, D^*$)"
-            )
 
     def _redraw_confirmed_peaks(self):
-        """Vẽ lớp nhãn người dùng xác nhận (Hình tròn đỏ nổi bật, zorder cao)."""
-        if self.confirmed_points is not None:
-            self.confirmed_points.remove()
-            self.confirmed_points = None
-
+        """Cập nhật dữ liệu tọa độ cho confirmed_line."""
         if len(self.confirmed_peaks) > 0:
             peak_list = sorted(list(self.confirmed_peaks))
             times = self.time_axis[peak_list]
             amps = self.h_event_sum[peak_list]
-
-            self.confirmed_points = self.ax.scatter(
-                times,
-                amps,
-                color="crimson",
-                marker="o",
-                s=70,
-                edgecolors="black",
-                linewidths=0.8,
-                zorder=5,
-                label="Confirmed Peaks"
-            )
+            self.confirmed_line.set_data(times, amps)
+        else:
+            self.confirmed_line.set_data([], [])
 
         self._update_title()
 
@@ -222,17 +237,17 @@ class InteractiveAnnotator:
         if click_time is None:
             return
 
-        # Snap tọa độ click về frame và thời gian frame chuẩn xác
         snapped_frame = int(time_to_frame(click_time, hop_length=config.HOP_LENGTH, sr=self.sample_rate))
         snapped_frame = int(np.clip(snapped_frame, 0, self.total_frames - 1))
         snapped_time = float(self.time_axis[snapped_frame])
 
-        # CHUỘT TRÁI: SEEK AUDIO & CURSOR (Không sửa annotation)
+        # CHUỘT TRÁI: Seek Audio
         if event.button == 1:
             self._seek_to(snapped_time)
 
-        # CHUỘT PHẢI: THÊM / XÓA USER PEAK
+        # CHUỘT PHẢI: BẬT / TẮT CONFIRMED PEAK (ẨN HOẶC HIỆN TỨC THÌ)
         elif event.button == 3:
+            # 1. Kiểm tra xem có click gần một chấm đỏ đã có -> XÓA (ẨN CHẤM ĐỎ)
             existing_peak_to_remove = None
             for p in self.confirmed_peaks:
                 if abs(p - snapped_frame) <= self.click_tolerance:
@@ -242,15 +257,26 @@ class InteractiveAnnotator:
             if existing_peak_to_remove is not None:
                 self.confirmed_peaks.remove(existing_peak_to_remove)
             else:
-                start = max(0, snapped_frame - self.search_radius)
-                end = min(self.total_frames, snapped_frame + self.search_radius + 1)
-                local_max = start + int(np.argmax(self.h_event_sum[start:end]))
-                self.confirmed_peaks.add(local_max)
+                # 2. Click gần mốc reference -> SNAP VÀO REFERENCE ĐÓ (HIỆN CHẤM ĐỎ)
+                candidates_in_range = [
+                    p for p in self.reference_peaks
+                    if abs(p - snapped_frame) <= self.snap_radius
+                ]
 
+                if len(candidates_in_range) > 0:
+                    target_peak = min(candidates_in_range, key=lambda p: abs(p - snapped_frame))
+                    self.confirmed_peaks.add(target_peak)
+                else:
+                    # 3. Fallback tìm cực đại cục bộ
+                    start = max(0, snapped_frame - self.search_radius)
+                    end = min(self.total_frames, snapped_frame + self.search_radius + 1)
+                    local_max = start + int(np.argmax(self.h_event_sum[start:end]))
+                    self.confirmed_peaks.add(local_max)
+
+            # Cập nhật dữ liệu ngay lập tức
             self._redraw_confirmed_peaks()
 
     def _seek_to(self, target_time: float):
-        """Dịch chuyển con chạy và đồng bộ vị trí phát âm thanh tức thì."""
         was_playing = self.is_playing
         if was_playing and HAS_SOUNDDEVICE:
             sd.stop()
@@ -258,7 +284,6 @@ class InteractiveAnnotator:
         self.current_cursor_time = target_time
         self.audio_start_time = target_time
         self.cursor_line.set_xdata([self.current_cursor_time, self.current_cursor_time])
-        self.fig.canvas.draw_idle()
 
         if was_playing:
             self._start_audio_stream()
@@ -277,7 +302,7 @@ class InteractiveAnnotator:
 
     def _on_play(self, _):
         if not HAS_SOUNDDEVICE or self.audio_samples is None:
-            print("[!] Cần thư viện sounddevice và audio_samples để phát âm thanh.")
+            print("[!] Cần sounddevice và audio_samples để phát âm thanh.")
             return
 
         if self.is_playing:
@@ -290,16 +315,20 @@ class InteractiveAnnotator:
         self.audio_start_time = self.current_cursor_time
         self._start_audio_stream()
 
+    def _get_current_playback_time(self) -> float:
+        elapsed_clock = time.monotonic() - self.playback_start_time
+        actual_audio_elapsed = max(0.0, elapsed_clock - self.hardware_latency)
+        pos = self.audio_start_time + actual_audio_elapsed - self.fft_center_offset + self.sync_offset
+        return max(0.0, min(pos, self.max_time))
+
     def _on_pause(self, _):
         if self.is_playing:
             if HAS_SOUNDDEVICE:
                 sd.stop()
-            elapsed = time.monotonic() - self.playback_start_time
-            self.current_cursor_time = min(self.audio_start_time + elapsed + self.sync_offset, self.max_time)
+            self.current_cursor_time = self._get_current_playback_time()
             self.audio_start_time = self.current_cursor_time
             self.is_playing = False
             self.cursor_line.set_xdata([self.current_cursor_time, self.current_cursor_time])
-            self.fig.canvas.draw_idle()
 
     def _on_stop(self, _):
         if HAS_SOUNDDEVICE:
@@ -308,23 +337,27 @@ class InteractiveAnnotator:
         self.current_cursor_time = 0.0
         self.audio_start_time = 0.0
         self.cursor_line.set_xdata([0.0, 0.0])
-        self.fig.canvas.draw_idle()
 
     def _init_cursor_anim(self):
+        """Khởi tạo các đối tượng động trong Blit."""
         self.cursor_line.set_xdata([self.current_cursor_time, self.current_cursor_time])
-        return (self.cursor_line,)
+        return (self.cursor_line, self.confirmed_line)
 
     def _update_cursor(self, _):
+        """
+        Vòng lặp animation 15ms:
+        Vẽ lại đồng thời cả con chạy dọc và các chấm tròn đỏ Confirmed Peaks.
+        """
         if self.is_playing:
-            elapsed = time.monotonic() - self.playback_start_time
-            current = self.audio_start_time + elapsed + self.sync_offset
+            current = self._get_current_playback_time()
             if current >= self.max_time:
                 self._on_stop(None)
             else:
                 self.current_cursor_time = current
 
         self.cursor_line.set_xdata([self.current_cursor_time, self.current_cursor_time])
-        return (self.cursor_line,)
+        # Trả về cả hai đối tượng động để Blit làm mới tức thì
+        return (self.cursor_line, self.confirmed_line)
 
     def _on_key(self, event):
         key = event.key.lower() if event.key else ""
@@ -336,6 +369,7 @@ class InteractiveAnnotator:
             self.confirmed_peaks = set(self.reference_peaks)
             self._redraw_confirmed_peaks()
         elif key == "c":
+            # Ẩn toàn bộ chấm đỏ lập tức
             self.confirmed_peaks.clear()
             self._redraw_confirmed_peaks()
         elif key == " ":
@@ -348,6 +382,7 @@ class InteractiveAnnotator:
         self.fig.canvas.mpl_connect("button_press_event", self._on_mouse_down)
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
 
+        # Chạy Animation với cả 2 đối tượng động
         self.anim = animation.FuncAnimation(
             self.fig,
             self._update_cursor,
