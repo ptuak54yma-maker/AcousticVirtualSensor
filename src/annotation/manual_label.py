@@ -6,11 +6,13 @@ Manual Frame-Level Annotation Tool (Matplotlib Interactive GUI)
 Provides a dedicated annotation GUI separating visual references from user labels:
 - Reference Peaks (P*, D*): Visual guide (grey triangles) - immutable, non-interactive.
 - Confirmed Peaks: User ground truth (red circles) - dynamic blit, toggles instantly.
-- Playback & Seeking: Audio-synchronized cursor tracking with hardware latency calibration.
+- Audio Playback: Frame-synchronized cursor tracking with hardware latency calibration.
 
 Interaction Controls:
 - Left-Click: Seek audio playback position (snaps to frame; does NOT edit peaks).
 - Right-Click: Toggle Peak (Add / Remove) - shows or hides red circle INSTANTLY.
+  * Click close to an existing red circle (<= 2 frames) -> Removes/Hides the peak.
+  * Click anywhere else -> Snaps to the local maximum (+/- 6 frames) and creates a new peak.
 - Key 's': Save confirmed labels and close window.
 - Key 'r': Reset confirmed peaks to initial reference proposal.
 - Key 'c': Clear all confirmed peaks (hide all red circles; reference triangles remain).
@@ -60,8 +62,8 @@ class InteractiveAnnotator:
         audio_samples: Optional[np.ndarray] = None,
         sample_rate: int = config.SAMPLE_RATE,
         snap_radius_frames: int = 10,
-        click_tolerance_frames: int = getattr(config, "ANNOTATION_CLICK_TOLERANCE_FRAMES", 4),
-        search_radius_frames: int = getattr(config, "ANNOTATION_LOCAL_SEARCH_RADIUS_FRAMES", 3),
+        click_tolerance_frames: int = 2,
+        search_radius_frames: int = 6,
         sync_offset: float = getattr(config, "ANNOTATION_AUDIO_SYNC_OFFSET", 0.0)
     ):
         self.filename = audio_filename
@@ -166,7 +168,7 @@ class InteractiveAnnotator:
             label=r"Ref Peaks ($P^*, D^*$)"
         )
 
-        # Lớp 2: Confirmed Peaks (QUAN TRỌNG: animated=True để blit cập nhật tức thì!)
+        # Lớp 2: Confirmed Peaks (animated=True kết hợp Line2D để Blit làm mới tức thì)
         (self.confirmed_line,) = self.ax.plot(
             [],
             [],
@@ -216,6 +218,7 @@ class InteractiveAnnotator:
             f"[Space]: Play/Pause  |  [S]: Save  |  [R]: Reset  |  [C]: Clear"
         )
         self.ax.set_title(title_text, fontsize=11, fontweight="bold")
+        self.fig.canvas.draw_idle()
 
     def _redraw_confirmed_peaks(self):
         """Cập nhật dữ liệu tọa độ cho confirmed_line."""
@@ -241,13 +244,13 @@ class InteractiveAnnotator:
         snapped_frame = int(np.clip(snapped_frame, 0, self.total_frames - 1))
         snapped_time = float(self.time_axis[snapped_frame])
 
-        # CHUỘT TRÁI: Seek Audio
+        # CHUỘT TRÁI: Seek Audio & Con chạy
         if event.button == 1:
             self._seek_to(snapped_time)
 
-        # CHUỘT PHẢI: BẬT / TẮT CONFIRMED PEAK (ẨN HOẶC HIỆN TỨC THÌ)
+        # CHUỘT PHẢI: BẬT / TẮT HOẶC TẠO ĐỈNH MỚI
         elif event.button == 3:
-            # 1. Kiểm tra xem có click gần một chấm đỏ đã có -> XÓA (ẨN CHẤM ĐỎ)
+            # 1. Nếu click thực sự sát một đỉnh đã chọn (<= click_tolerance) -> Xóa đỉnh
             existing_peak_to_remove = None
             for p in self.confirmed_peaks:
                 if abs(p - snapped_frame) <= self.click_tolerance:
@@ -257,7 +260,7 @@ class InteractiveAnnotator:
             if existing_peak_to_remove is not None:
                 self.confirmed_peaks.remove(existing_peak_to_remove)
             else:
-                # 2. Click gần mốc reference -> SNAP VÀO REFERENCE ĐÓ (HIỆN CHẤM ĐỎ)
+                # 2. Nếu click gần một Reference Peak (trong snap_radius) -> Snap vào Reference Peak
                 candidates_in_range = [
                     p for p in self.reference_peaks
                     if abs(p - snapped_frame) <= self.snap_radius
@@ -267,7 +270,7 @@ class InteractiveAnnotator:
                     target_peak = min(candidates_in_range, key=lambda p: abs(p - snapped_frame))
                     self.confirmed_peaks.add(target_peak)
                 else:
-                    # 3. Fallback tìm cực đại cục bộ
+                    # 3. Tạo đỉnh tự do: Tìm cực đại cục bộ trong phạm vi +/- search_radius quanh chỗ click
                     start = max(0, snapped_frame - self.search_radius)
                     end = min(self.total_frames, snapped_frame + self.search_radius + 1)
                     local_max = start + int(np.argmax(self.h_event_sum[start:end]))
@@ -344,10 +347,7 @@ class InteractiveAnnotator:
         return (self.cursor_line, self.confirmed_line)
 
     def _update_cursor(self, _):
-        """
-        Vòng lặp animation 15ms:
-        Vẽ lại đồng thời cả con chạy dọc và các chấm tròn đỏ Confirmed Peaks.
-        """
+        """Vòng lặp animation 15ms: vẽ đè cả vạch chạy dọc và các chấm tròn đỏ."""
         if self.is_playing:
             current = self._get_current_playback_time()
             if current >= self.max_time:
@@ -356,7 +356,6 @@ class InteractiveAnnotator:
                 self.current_cursor_time = current
 
         self.cursor_line.set_xdata([self.current_cursor_time, self.current_cursor_time])
-        # Trả về cả hai đối tượng động để Blit làm mới tức thì
         return (self.cursor_line, self.confirmed_line)
 
     def _on_key(self, event):
@@ -369,7 +368,7 @@ class InteractiveAnnotator:
             self.confirmed_peaks = set(self.reference_peaks)
             self._redraw_confirmed_peaks()
         elif key == "c":
-            # Ẩn toàn bộ chấm đỏ lập tức
+            # Ẩn toàn bộ chấm đỏ
             self.confirmed_peaks.clear()
             self._redraw_confirmed_peaks()
         elif key == " ":
@@ -382,7 +381,6 @@ class InteractiveAnnotator:
         self.fig.canvas.mpl_connect("button_press_event", self._on_mouse_down)
         self.fig.canvas.mpl_connect("key_press_event", self._on_key)
 
-        # Chạy Animation với cả 2 đối tượng động
         self.anim = animation.FuncAnimation(
             self.fig,
             self._update_cursor,
