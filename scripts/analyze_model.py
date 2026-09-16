@@ -65,7 +65,9 @@ def analyze_audio_dataset(dir_path: Path, label_path: Path):
         "files": wav_files,
         "count": len(wav_files),
         "total_duration": total_duration,
-        "avg_duration": np.mean(durations) if durations else 0.0,
+        "avg_duration": float(np.mean(durations)) if durations else 0.0,
+        "min_duration": float(np.min(durations)) if durations else 0.0,
+        "max_duration": float(np.max(durations)) if durations else 0.0,
         "durations": durations,
         "sample_rates": list(sample_rates),
         "channels": list(channels),
@@ -98,35 +100,40 @@ def analyze_annotations(dir_path: Path):
     return {
         "files_count": len(npz_files),
         "total_events": total_events,
-        "avg_events": np.mean(events_per_file) if events_per_file else 0.0,
-        "min_interval": np.min(intervals_sec) if intervals_sec else 0.0,
-        "max_interval": np.max(intervals_sec) if intervals_sec else 0.0,
-        "mean_interval": np.mean(intervals_sec) if intervals_sec else 0.0,
+        "avg_events": float(np.mean(events_per_file)) if events_per_file else 0.0,
+        "min_interval": float(np.min(intervals_sec)) if intervals_sec else 0.0,
+        "max_interval": float(np.max(intervals_sec)) if intervals_sec else 0.0,
+        "mean_interval": float(np.mean(intervals_sec)) if intervals_sec else 0.0,
+        "median_interval": float(np.median(intervals_sec)) if intervals_sec else 0.0,
+        "std_interval": float(np.std(intervals_sec)) if intervals_sec else 0.0,
         "intervals": intervals_sec
     }
 
 
 def run_analysis():
-    print("=" * 65)
+    print("=" * 75)
     print("      ACOUSTIC VIRTUAL SENSOR - MODEL & HARDWARE SPECIFICATION")
-    print("=" * 65)
+    print("=" * 75)
 
-    # 1. AUDIO & STFT
+    # 1. AUDIO & SPECTRAL CONFIGURATION
     sr = config.SAMPLE_RATE
     n_fft = config.N_FFT
     hop = config.HOP_LENGTH
     n_freq = n_fft // 2 + 1
-    t_frame_ms = (hop / float(sr)) * 1000.0
+    t_fft_window_ms = (n_fft / float(sr)) * 1000.0
+    t_frame_interval_ms = (hop / float(sr)) * 1000.0
 
-    print("\n[1. AUDIO & SPECTRAL CONFIGURATION]")
-    print(f"  Sampling rate (fs)         : {sr} Hz")
-    print(f"  FFT length (N_FFT)         : {n_fft} samples ({(n_fft / sr) * 1000.0:.2f} ms)")
-    print(f"  Hop length (H)             : {hop} samples")
-    print(f"  Window function            : {config.WINDOW_FUNCTION} (center={config.CENTER_STFT})")
-    print(f"  Frequency bins (F)         : {n_freq} bins (0 - {sr / 2.0:.1f} Hz)")
-    print(f"  Frame budget (T_frame)     : {t_frame_ms:.2f} ms (Physical Arrival Interval)")
+    print("\n[1. AUDIO & SPECTRAL CONFIGURATION (CALCULATED / SYSTEM SPEC)]")
+    print(f"  Sampling rate (fs)                : {sr} Hz")
+    print(f"  FFT length (N_FFT)                : {n_fft} samples")
+    print(f"  FFT window duration               : {t_fft_window_ms:.2f} ms")
+    print(f"  Hop length (H)                    : {hop} samples")
+    print(f"  Frame processing interval (Budget): {t_frame_interval_ms:.2f} ms (Physical Arrival Step)")
+    print(f"  Window function                   : {getattr(config, 'WINDOW_FUNCTION', 'hann')} (center={getattr(config, 'CENTER_STFT', False)})")
+    print(f"  Frequency bins (F)                : {n_freq} bins")
+    print(f"  Frequency range                   : 0.0 - {sr / 2.0:.1f} Hz")
 
-    # 2. NMF MODEL
+    # 2. NMF MODEL SPECIFICATION
     w_path = config.W_STANDARD_PATH
     if not w_path.is_file():
         print(f"\n[!] Không tìm thấy file từ điển W tại: {w_path}")
@@ -138,115 +145,150 @@ def run_analysis():
     w_bytes = W.nbytes
     w_kib = w_bytes / 1024.0
 
-    print("\n[2. NMF DICTIONARY SPECIFICATION]")
-    print(f"  Dictionary file            : {w_path.name}")
-    print(f"  Matrix shape (F x C)       : {w_shape} (Freq Bins x Components)")
-    print(f"  Data type (dtype)          : {w_dtype}")
-    print(f"  Total parameters           : {W.size:,} floats")
-    print(f"  Memory footprint (FP32)    : {w_bytes:,} bytes ({w_kib:.2f} KiB)")
-    print(f"  Numerical statistics       : Min={W.min():.5f} | Max={W.max():.5f} | Mean={W.mean():.5f} | Std={W.std():.5f}")
-    print(f"  Integrity check            : NaN={np.isnan(W).sum()} | Inf={np.isinf(W).sum()}")
-    print(f"  Decomposition components   : Total={config.TOTAL_COMPONENTS} (Event={config.EVENT_COMPONENTS}, Bowl={config.BOWL_COMPONENTS}, Env={config.ENV_COMPONENTS})")
+    min_val, max_val = float(W.min()), float(W.max())
+    mean_val, std_val = float(W.mean()), float(W.std())
+    nan_count = int(np.isnan(W).sum())
+    inf_count = int(np.isinf(W).sum())
+    dynamic_range_db = 20.0 * np.log10(max_val / max(1e-12, min_val[min_val > 0] if np.any(min_val > 0) else 1e-6))
 
-    # 3. PEAK DETECTION PARAMETERS
+    print("\n[2. NMF DICTIONARY SPECIFICATION (MEASURED & CALCULATED)]")
+    print(f"  Dictionary file                   : {w_path.name}")
+    print(f"  Matrix shape (F x C)              : {w_shape} (Freq Bins x Components)")
+    print(f"  Total parameters                  : {W.size:,} floats")
+    print(f"  Storage precision (dtype)         : {w_dtype}")
+    print(f"  Storage size (FP32)               : {w_bytes:,} bytes ({w_kib:.2f} KiB)")
+    print(f"  Storage size (FP16 compact)       : {w_bytes // 2:,} bytes ({w_kib / 2.0:.2f} KiB) [TO BE VALIDATED]")
+    print(f"  Numerical range                   : Min={min_val:.5e} | Max={max_val:.5e}")
+    print(f"  Distribution stats                : Mean={mean_val:.5e} | Std={std_val:.5e}")
+    print(f"  Dynamic Range                     : ~{dynamic_range_db:.2f} dB")
+    print(f"  Integrity check                   : NaN={nan_count} | Inf={inf_count}")
+    print(f"  Component breakdown               : Total={config.TOTAL_COMPONENTS} (Event={config.EVENT_COMPONENTS}, Bowl={config.BOWL_COMPONENTS}, Env={config.ENV_COMPONENTS})")
+
+    # 3. PEAK DETECTOR SPECIFICATION
     peak_json = config.PEAK_PARAMS_PATH
     prominence = config.DEFAULT_PEAK_PROMINENCE
     distance = config.DEFAULT_PEAK_DISTANCE_FRAMES
     mae_train = None
+    num_train_files_used = None
 
     if peak_json.is_file():
-        with open(peak_json, "r", encoding="utf-8") as f:
-            p_data = json.load(f)
-            prominence = p_data.get("prominence", prominence)
-            distance = p_data.get("distance", distance)
-            mae_train = p_data.get("mae", None)
+        try:
+            with open(peak_json, "r", encoding="utf-8") as f:
+                p_data = json.load(f)
+                prominence = p_data.get("prominence", prominence)
+                distance = p_data.get("distance", distance)
+                mae_train = p_data.get("mae", None)
+                num_train_files_used = p_data.get("num_files", None)
+        except Exception:
+            pass
 
-    min_event_time_ms = distance * t_frame_ms
+    min_event_distance_ms = distance * t_frame_interval_ms
 
-    print("\n[3. PEAK DETECTOR CONFIGURATION]")
-    print(f"  Parameter source           : {peak_json.name if peak_json.is_file() else 'Default values'}")
-    print(f"  Prominence threshold (P*)  : {prominence}")
-    print(f"  Min distance (D*)          : {distance} frames ({min_event_time_ms:.2f} ms)")
-    if mae_train is not None:
-        print(f"  Training Count MAE         : {mae_train:.2f} parts")
+    print("\n[3. PEAK DETECTOR SPECIFICATION]")
+    print(f"  Configuration source              : {peak_json.name if peak_json.is_file() else 'Config Defaults'}")
+    print(f"  Prominence threshold (P*)         : {prominence}")
+    print(f"  Minimum distance (D*)             : {distance} frames ({min_event_distance_ms:.2f} ms)")
+    print(f"  Training Performance (Count MAE)  : {mae_train:.2f} parts" if mae_train is not None else "  Training Performance (Count MAE)  : N/A")
 
-    # 4. DATASET ANALYSIS
+    # 4. DATASET & TEMPORAL CHARACTERISTICS
     train_data = analyze_audio_dataset(config.TRAIN_AUDIO_DIR, config.TRAIN_AUDIO_DIR / "label.txt")
     test_data = analyze_audio_dataset(config.TEST_AUDIO_DIR, config.TEST_AUDIO_DIR / "label.txt")
     annot_data = analyze_annotations(config.TRAIN_ANNOTATION_DIR)
 
-    print("\n[4. DATASET & EVENT CHARACTERISTICS]")
-    print(f"  Training set files         : {train_data['count']} files | Total duration: {train_data['total_duration']:.2f} s")
-    print(f"  Testing set files          : {test_data['count']} files | Total duration: {test_data['total_duration']:.2f} s")
-    print(f"  Total verified workpieces  : Train={train_data['total_workpieces']} | Test={test_data['total_workpieces']}")
+    print("\n[4. DATASET & EVENT CHARACTERISTICS (MEASURED & CALCULATED)]")
+    print(f"  Training Audio files (Train_*.wav): {train_data['count']} files")
+    print(f"  Testing Audio files (Test_*.wav)  : {test_data['count']} files")
+    print(f"  Total Duration                    : Train={train_data['total_duration']:.2f} s | Test={test_data['total_duration']:.2f} s")
+    print(f"  Average File Duration             : Train={train_data['avg_duration']:.2f} s | Test={test_data['avg_duration']:.2f} s")
+    print(f"  Min / Max File Duration           : [{train_data['min_duration']:.2f}s, {train_data['max_duration']:.2f}s]")
+    print(f"  Total Workpieces (label.txt)      : Train={train_data['total_workpieces']} parts | Test={test_data['total_workpieces']} parts")
+
+    print(f"\n  Annotation Verification Status:")
+    print(f"    - Audio training files count    : {train_data['count']}")
+    print(f"    - Frame-annotated files count   : {annot_data['files_count']} ({annot_data['total_events']} confirmed events)")
+    print(f"    - Peak-parameter source files   : {num_train_files_used if num_train_files_used is not None else 'Unrecorded'}")
+
+    if num_train_files_used is not None and annot_data['files_count'] > 0 and num_train_files_used != annot_data['files_count']:
+        print(f"    [!] WARNING: The number of files used for peak-parameter optimization ({num_train_files_used})")
+        print(f"                 does not match the reported frame-annotated files ({annot_data['files_count']}).")
+        print(f"                 Please verify your train dataset split/annotation consistency.")
 
     if annot_data["files_count"] > 0 and annot_data["intervals"]:
         min_dt = annot_data["min_interval"]
         max_rate = 1.0 / min_dt if min_dt > 0 else 0.0
-        print(f"  Frame annotations available: {annot_data['files_count']} files ({annot_data['total_events']} events)")
-        print(f"  Workpiece time gap (Δt)    : Min={min_dt * 1000.0:.1f} ms | Max={annot_data['max_interval']:.2f} s | Mean={annot_data['mean_interval'] * 1000.0:.1f} ms")
-        print(f"  Physical Maximum Feed Rate : {max_rate:.2f} events/second")
-    else:
-        print("  Frame annotations available: No *_labels.npz files detected.")
+        print(f"\n  Temporal Inter-event Characteristics (Annotation Ground-Truth):")
+        print(f"    - Physical Min event gap (Δt_min): {min_dt * 1000.0:.2f} ms")
+        print(f"    - Mean event gap                 : {annot_data['mean_interval'] * 1000.0:.2f} ms")
+        print(f"    - Median event gap               : {annot_data['median_interval'] * 1000.0:.2f} ms")
+        print(f"    - Std event gap                  : {annot_data['std_interval'] * 1000.0:.2f} ms")
+        print(f"    - Max event gap                  : {annot_data['max_interval']:.2f} s")
+        print(f"    - Physical Maximum Feed Rate     : {max_rate:.2f} events/s (R_max = 1 / Δt_min)")
 
     # 5. COMPUTATIONAL COMPLEXITY PER FRAME
-    stft_macs = n_fft * int(np.log2(n_fft))  # Cooley-Tukey RFFT approx
-    log_ops = n_freq
-    w_t_v_macs = n_freq * config.TOTAL_COMPONENTS  # W^T * V_t
+    stft_flops = n_fft * int(np.log2(n_fft)) * 5  # Radix-2 / Split-radix approximation
+    w_t_v_macs = n_freq * config.TOTAL_COMPONENTS
     hesum_adds = config.EVENT_COMPONENTS
 
-    print("\n[5. COMPUTATIONAL WORKLOAD PER FRAME (Hop = 1024)]")
-    print(f"  STFT (Real FFT {n_fft})     : ~{stft_macs:,} FLOPs (O(N log N))")
-    print(f"  Log-Magnitude Compression  : {log_ops:,} log1p operations (O(F))")
-    print(f"  W^T * V projection         : {w_t_v_macs:,} MACs ({w_t_v_macs * 2:,} FLOPs)")
-    print(f"  NNLS Active-Set Solver     : Iterative (Matrix Gram W^T*W = {config.TOTAL_COMPONENTS}x{config.TOTAL_COMPONENTS})")
-    print(f"  H_event_sum Accumulation   : {hesum_adds} additions (O(K_event))")
-    print(f"  Peak Detector              : O(1) state transitions per frame")
+    print("\n[5. COMPUTATIONAL WORKLOAD PER FRAME (CALCULATED & ESTIMATED)]")
+    print(f"  1. STFT (Real FFT 2048 pts)       : O(N log N) (~{stft_flops:,} FLOPs)")
+    print(f"  2. Log Compression (log1p)        : O(F) ({n_freq:,} operations)")
+    print(f"  3. Matrix Projection (W^T * V_t)  : O(F x C) ({w_t_v_macs:,} MACs / {w_t_v_macs * 2:,} FLOPs)")
+    print(f"  4. NNLS Solver (W: 1025 x 48)     : Iterative Active-Set / Gram Matrix 48x48 (Runtime Dependent)")
+    print(f"  5. Event Sum Accumulation (H_e)   : O(K_event) ({hesum_adds} additions)")
+    print(f"  6. Peak Detection                 : O(1) State Machine Transitions per frame")
 
     # 6. ESTIMATED MEMORY FOOTPRINT ON MCU
-    # Flash: W constant + Window table + Firmware / Math code
-    flash_w_fp32 = w_bytes
+    flash_w_measured = w_bytes
     flash_w_fp16 = w_bytes // 2
-    flash_window = n_fft * 4  # Hann float32
-    flash_firmware_approx = 40 * 1024  # C-runtime CMSIS-DSP, NNLS, state machine
+    flash_hann_table_est = n_fft * 4  # 8 KiB
+    flash_firmware_est = 40 * 1024    # ~40 KiB
 
-    # Peak RAM (Live simultaneous buffers for 1 frame)
-    ram_audio_ring = n_fft * 4  # 2048 float32
-    ram_rfft_out = n_freq * 8   # 1025 complex64
-    ram_log_v = n_freq * 4      # 1025 float32
-    ram_h_vec = config.TOTAL_COMPONENTS * 4  # 48 float32
-    ram_nnls_workspace = (config.TOTAL_COMPONENTS ** 2 + config.TOTAL_COMPONENTS * 4) * 4  # Gram + temp
-    ram_peak_state = 64         # FSM struct
-    ram_stack_rtos = 8 * 1024   # Stack / ISR margin
+    # Peak RAM workspace model
+    ram_audio_ring = n_fft * 4        # 2048 float32 = 8 KiB
+    ram_rfft_out = n_freq * 8         # 1025 complex64 = 8.2 KiB
+    ram_v_frame = n_freq * 4          # 1025 float32 = 4.1 KiB
+    ram_h_frame = config.TOTAL_COMPONENTS * 4  # 48 float32 = 192 bytes
+    ram_nnls_workspace = (config.TOTAL_COMPONENTS ** 2 + config.TOTAL_COMPONENTS * 4) * 4  # ~10 KiB
+    ram_peak_state = 64               # Struct FSM
+    ram_stack_rtos = 8 * 1024         # ~8 KiB
 
-    total_live_ram = ram_audio_ring + ram_rfft_out + ram_log_v + ram_h_vec + ram_nnls_workspace + ram_peak_state + ram_stack_rtos
-    safety_ram = total_live_ram * 1.20
+    total_live_ram_est = (ram_audio_ring + ram_rfft_out + ram_v_frame + 
+                          ram_h_frame + ram_nnls_workspace + ram_peak_state + ram_stack_rtos)
+    ram_with_margin_est = total_live_ram_est * 1.20
 
-    print("\n[6. ESTIMATED HARDWARE RESOURCE REQUIREMENTS]")
-    print(f"  STATIC FLASH / ROM (Constant Storage):")
-    print(f"    - W Matrix (FP32)        : {flash_w_fp32 / 1024.0:.2f} KiB")
-    print(f"    - W Matrix (FP16 compact): {flash_w_fp16 / 1024.0:.2f} KiB")
-    print(f"    - Hann Window Table      : {flash_window / 1024.0:.2f} KiB")
-    print(f"    - Firmware Code Estimate : ~{flash_firmware_approx / 1024.0:.2f} KiB")
-    print(f"    => Total Flash (FP32)    : ~{(flash_w_fp32 + flash_window + flash_firmware_approx) / 1024.0:.2f} KiB")
+    print("\n[6. MEMORY FOOTPRINT MODEL (MEASURED vs ESTIMATED)]")
+    print(f"  STATIC FLASH / ROM STORAGE:")
+    print(f"    - W Matrix (FP32) [MEASURED]    : {flash_w_measured:,} bytes ({flash_w_measured / 1024.0:.2f} KiB)")
+    print(f"    - W Matrix (FP16) [CALCULATED]  : {flash_w_fp16:,} bytes ({flash_w_fp16 / 1024.0:.2f} KiB) [TO BE VALIDATED]")
+    print(f"    - Hann Window Table [ESTIMATED] : ~{flash_hann_table_est / 1024.0:.2f} KiB")
+    print(f"    - Firmware Code [ESTIMATED]     : ~{flash_firmware_est / 1024.0:.2f} KiB (DSP math + NNLS runtime)")
+    print(f"    => Estimated Total Flash (FP32) : ~{(flash_w_measured + flash_hann_table_est + flash_firmware_est) / 1024.0:.2f} KiB")
 
-    print(f"\n  PEAK DYNAMIC RAM (One-Frame-At-A-Time Streaming):")
-    print(f"    - Audio Ring Buffer      : {ram_audio_ring / 1024.0:.2f} KiB")
-    print(f"    - RFFT Complex Output    : {ram_rfft_out / 1024.0:.2f} KiB")
-    print(f"    - Log-Magnitude Vector Vt: {ram_log_v / 1024.0:.2f} KiB")
-    print(f"    - Activation Vector ht   : {ram_h_vec} bytes")
-    print(f"    - NNLS Workspace (Gram)  : {ram_nnls_workspace / 1024.0:.2f} KiB")
-    print(f"    - Stack & System Margin  : {ram_stack_rtos / 1024.0:.2f} KiB")
-    print(f"    => Peak Simultaneous RAM : {total_live_ram / 1024.0:.2f} KiB")
-    print(f"    => RAM with +20% Margin  : {safety_ram / 1024.0:.2f} KiB")
+    print(f"\n  DYNAMIC SRAM WORKSPACE MODEL (Peak Live Buffers for 1 Frame):")
+    print(f"    - Audio Ring Buffer (DMA/I2S)   : {ram_audio_ring / 1024.0:.2f} KiB")
+    print(f"    - RFFT Complex Output (X_t)     : {ram_rfft_out / 1024.0:.2f} KiB")
+    print(f"    - Log-Magnitude Spectrum (V_t)  : {ram_v_frame / 1024.0:.2f} KiB")
+    print(f"    - Activation Vector (h_t)       : {ram_h_frame} bytes")
+    print(f"    - NNLS Workspace (Gram + temp)  : ~{ram_nnls_workspace / 1024.0:.2f} KiB")
+    print(f"    - Peak Detector FSM State       : <0.1 KiB")
+    print(f"    - Stack & System Margin         : ~{ram_stack_rtos / 1024.0:.2f} KiB")
+    print(f"    => Estimated Peak Simultaneous  : ~{total_live_ram_est / 1024.0:.2f} KiB")
+    print(f"    => SRAM (+20% Engineering Margin: ~{ram_with_margin_est / 1024.0:.2f} KiB (*Note: Engineering margin, not algorithm requirement)")
 
-    # 7. FEASIBILITY BOUNDS
-    print("\n[7. HARDWARE SELECTION CRITERIA]")
-    print(f"  1. Timing Budget           : Total frame execution latency T_exec < {t_frame_ms:.2f} ms")
-    print(f"  2. Flash Requirement       : Flash_available >= {(flash_w_fp32 + flash_window + flash_firmware_approx) / 1024.0:.1f} KiB (FP32)")
-    print(f"  3. SRAM Requirement        : SRAM_available  >= {safety_ram / 1024.0:.1f} KiB")
-    print(f"  4. Arithmetic Support      : Single-Precision FPU & DSP extension mandatory")
-    print("=" * 65 + "\n")
+    # 7. HARDWARE REQUIREMENT SUMMARY
+    print("\n" + "=" * 75)
+    print("                      HARDWARE REQUIREMENT SUMMARY")
+    print("=" * 75)
+    print(f"  Frame Interval Budget           : {t_frame_interval_ms:.2f} ms")
+    print(f"  Estimated Flash (FP32)          : ~{(flash_w_measured + flash_hann_table_est + flash_firmware_est) / 1024.0:.1f} KiB")
+    print(f"  Estimated SRAM Required         : ~{total_live_ram_est / 1024.0:.1f} KiB (~{ram_with_margin_est / 1024.0:.1f} KiB with 20% margin)")
+    print(f"  Dictionary Precision            : FP32 ({w_kib:.1f} KiB) | FP16 ({w_kib / 2.0:.1f} KiB, NOT YET VALIDATED)")
+    print(f"  Main Computational Block        : NNLS (Iterative Solver)")
+    print(f"  Projection Workload             : {w_t_v_macs:,} MAC/frame")
+    print(f"  Required Arithmetic             : Single-Precision Floating-Point (FPU recommended / strongly preferred)")
+    print(f"  DSP / SIMD Instructions         : Recommended for Real-Time Headroom")
+    print(f"  MCU Hardware Selection Status   : Candidate comparison pending runtime profiling")
+    print("=" * 75 + "\n")
 
 
 if __name__ == "__main__":
