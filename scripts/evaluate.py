@@ -1,11 +1,12 @@
 """
 ===============================================================================
-Script: Full Evaluation & Benchmark (scripts/evaluate.py)
+Script: Evaluation & Benchmark (scripts/evaluate.py)
 ===============================================================================
 
-Runs both Baseline (NMF + Peak Detection) and Proposed (Hybrid NMF + CRNN) 
-on the independent test set, computes Frame/Event/Count metrics, and outputs 
-comparison tables directly formatted for the thesis.
+Runs NMF + Peak Detection pipeline on the independent test set,
+evaluates Count-level metrics (MAE, MAPE, Accuracy) against data/test/label.txt,
+and optionally evaluates Event-level F1 if frame-level labels exist.
+Outputs results directly formatted for the thesis.
 """
 
 import sys
@@ -26,7 +27,7 @@ from src.evaluation.event_metrics import compute_event_metrics
 
 
 def parse_label_txt(label_file_path: Path) -> dict:
-    """Đọc ground-truth count từ file label.txt nếu có."""
+    """Đọc file label.txt và chuyển thành dictionary {filename: count}."""
     ground_truth = {}
     if not label_file_path.is_file():
         return ground_truth
@@ -38,8 +39,11 @@ def parse_label_txt(label_file_path: Path) -> dict:
                 continue
             parts = line.split(":")
             fname = parts[0].strip()
+            if not fname.lower().endswith(".wav"):
+                fname = f"{fname}.wav"
             try:
-                ground_truth[fname] = int(parts[1].strip())
+                cnt = int(parts[1].strip())
+                ground_truth[fname] = cnt
             except ValueError:
                 continue
     return ground_truth
@@ -51,87 +55,79 @@ def run_benchmark():
         print(f"[!] Không tìm thấy file WAV nào trong thư mục kiểm thử: {config.TEST_AUDIO_DIR}")
         return
 
-    # 1. Đọc ground-truth count từ data/test/label.txt
-    test_gt_counts = parse_label_txt(config.TEST_AUDIO_DIR / "label.txt")
+    # Nạp Ground Truth Count từ data/test/label.txt
+    test_label_file = config.TEST_AUDIO_DIR / "label.txt"
+    test_gt_counts = parse_label_txt(test_label_file)
 
-    print(f"[*] Khởi tạo 2 cảm biến ảo đối chuẩn trên {len(test_files)} file test...")
-    sensor_baseline = AcousticVirtualSensorCore(mode="baseline_nmf")
-    
-    # Kiểm tra an toàn trước khi khởi tạo CRNN
-    has_crnn = config.CRNN_MODEL_PATH.is_file()
-    sensor_crnn = AcousticVirtualSensorCore(mode="crnn") if has_crnn else None
-    if not has_crnn:
-        print(f"[!] Cảnh báo: Chưa tìm thấy {config.CRNN_MODEL_PATH}. Chỉ đánh giá Baseline.")
+    print(f"[*] Khởi tạo Acoustic Virtual Sensor (NMF + Peak Detection)...")
+    print(f"[*] Tìm thấy {len(test_files)} file test. Nhãn ground truth có sẵn: {len(test_gt_counts)} files.")
+    sensor = AcousticVirtualSensorCore(mode="baseline_nmf")
 
     results = []
 
     for wav_path in test_files:
         audio, _ = load_audio(wav_path, target_sr=config.SAMPLE_RATE)
         
-        # Ưu tiên lấy ground truth từ label.txt, sau đó mới đến file .npz
+        # 1. Chạy suy luận qua pipeline NMF + Peak Detection
+        res = sensor.process_offline_file(audio)
+        pred_count = res["total_count"]
+        pred_events = res["event_frames"]
+        duration = res["duration_sec"]
+        feed_rate = res["feed_rate"]
+
+        # 2. Đọc ground truth count
         true_count = test_gt_counts.get(wav_path.name, None)
-        true_event_frames = []
-        
+
+        record = {
+            "Filename": wav_path.name,
+            "Duration (s)": round(duration, 2),
+            "Feed Rate (p/s)": round(feed_rate, 2),
+            "True Count": true_count if true_count is not None else "N/A",
+            "Pred Count": pred_count,
+            "Abs Error": abs(pred_count - true_count) if true_count is not None else "N/A"
+        }
+
+        # 3. Tính Event-level F1 nếu tồn tại nhãn frame-level
         annot_path = config.TEST_ANNOTATION_DIR / f"{wav_path.stem}_labels.npz"
         if annot_path.is_file():
             annot_data = load_annotation(annot_path)
             true_event_frames = np.where(annot_data["binary_labels"] == 1)[0]
-            if true_count is None:
-                true_count = len(true_event_frames)
-
-        # 1. Baseline Inference
-        res_base = sensor_baseline.process_offline_file(audio)
-        
-        # 2. CRNN Inference
-        res_crnn = sensor_crnn.process_offline_file(audio) if sensor_crnn else None
-
-        base_count = res_base["total_count"]
-        crnn_count = res_crnn["total_count"] if res_crnn else None
-
-        record = {
-            "Filename": wav_path.name,
-            "Duration (s)": round(len(audio) / config.SAMPLE_RATE, 2),
-            "True Count": true_count,
-            "Baseline Count": base_count,
-            "CRNN Count": crnn_count
-        }
-
-        # Event-level F1 if frame-level labels available
-        if len(true_event_frames) > 0:
-            f1_base = compute_event_metrics(true_event_frames, res_base["event_frames"])["event_f1"]
-            record["Baseline Event F1"] = round(f1_base, 4)
-            if res_crnn:
-                f1_crnn = compute_event_metrics(true_event_frames, res_crnn["event_frames"])["event_f1"]
-                record["CRNN Event F1"] = round(f1_crnn, 4)
+            ev_metrics = compute_event_metrics(true_event_frames, pred_events)
+            record["Precision"] = round(ev_metrics["event_precision"], 4)
+            record["Recall"] = round(ev_metrics["event_recall"], 4)
+            record["Event F1"] = round(ev_metrics["event_f1"], 4)
 
         results.append(record)
 
     df = pd.DataFrame(results)
-    print("\n" + "=" * 80)
-    print("BẢNG KẾT QUẢ ĐỐI CHUẨN THỰC NGHIỆM TRÊN TẬP TEST")
-    print("=" * 80)
+    print("\n" + "=" * 85)
+    print("BẢNG KẾT QUẢ ĐÁNH GIÁ NMF + PEAK DETECTION TRÊN TẬP TEST")
+    print("=" * 85)
     print(df.to_string(index=False))
 
-    # Calculate aggregate count metrics if ground truth is available
-    if any(r["True Count"] is not None for r in results):
-        valid_results = [r for r in results if r["True Count"] is not None]
-        y_true = [r["True Count"] for r in valid_results]
-        base_counts = [r["Baseline Count"] for r in valid_results]
+    # 4. Tính toán các chỉ số tổng hợp
+    valid_records = [r for r in results if r["True Count"] != "N/A"]
+    if valid_records:
+        y_true = [r["True Count"] for r in valid_records]
+        y_pred = [r["Pred Count"] for r in valid_records]
 
-        m_base = compute_count_metrics(y_true, base_counts)
-        print("\n" + "-" * 80)
-        print(f"Tổng kết Baseline NMF + Peak Detection : Accuracy = {m_base['mean_accuracy']:.2f}% | MAE = {m_base['mae']:.2f} | MAPE = {m_base['mape']:.2f}%")
+        metrics = compute_count_metrics(y_true, y_pred)
 
-        if sensor_crnn:
-            crnn_counts = [r["CRNN Count"] for r in valid_results]
-            m_crnn = compute_count_metrics(y_true, crnn_counts)
-            print(f"Tổng kết Proposed NMF + CRNN           : Accuracy = {m_crnn['mean_accuracy']:.2f}% | MAE = {m_crnn['mae']:.2f} | MAPE = {m_crnn['mape']:.2f}%")
-        print("-" * 80)
+        print("\n" + "-" * 85)
+        print("TỔNG KẾT HIỆU NĂNG ĐẾM SẢN PHẨM:")
+        print(f"  - Số lượng file đánh giá: {len(valid_records)}")
+        print(f"  - Mean Accuracy         : {metrics['mean_accuracy']:.2f}%")
+        print(f"  - MAE                   : {metrics['mae']:.2f} parts")
+        print(f"  - MAPE                  : {metrics['mape']:.2f}%")
+        print(f"  - Tổng phôi thực tế     : {metrics['total_true']}")
+        print(f"  - Tổng phôi đếm được    : {metrics['total_pred']}")
+        print("-" * 85)
 
-    # Save to CSV
-    csv_file = config.EVAL_RESULTS_CSV
+    # 5. Xuất file kết quả CSV
+    csv_file = config.OUTPUT_DIR / "results" / "comparison_results.csv"
+    csv_file.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(str(csv_file), index=False)
-    print(f"\n[✓] Đã xuất báo cáo so sánh chi tiết ra file: {csv_file}")
+    print(f"\n[✓] Đã xuất báo cáo chi tiết ra file: {csv_file}")
 
 
 if __name__ == "__main__":
