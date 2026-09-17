@@ -1,11 +1,11 @@
 """
 ===============================================================================
-Script: Static & Dynamic Model Resource Profiler (scripts/analyze_model.py)
+Script: Static Model & Hardware Specification Profiler (scripts/analyze_model.py)
 ===============================================================================
 
-Extracts exact model specifications, memory footprints, computational complexity,
-and dataset characteristics for NMF + Peak Detection pipeline.
-Does NOT run runtime benchmarks; provides input constraints for MCU selection.
+Extracts exact model specifications, storage requirements, computational workload,
+and dataset temporal characteristics for NMF + Peak Detection pipeline.
+Does NOT run runtime latency benchmarks; provides structural constraints for MCU selection.
 """
 
 import sys
@@ -111,9 +111,9 @@ def analyze_annotations(dir_path: Path):
 
 
 def run_analysis():
-    print("=" * 75)
+    print("=" * 80)
     print("      ACOUSTIC VIRTUAL SENSOR - MODEL & HARDWARE SPECIFICATION")
-    print("=" * 75)
+    print("=" * 80)
 
     # 1. AUDIO & SPECTRAL CONFIGURATION
     sr = config.SAMPLE_RATE
@@ -128,7 +128,7 @@ def run_analysis():
     print(f"  FFT length (N_FFT)                : {n_fft} samples")
     print(f"  FFT window duration               : {t_fft_window_ms:.2f} ms")
     print(f"  Hop length (H)                    : {hop} samples")
-    print(f"  Frame processing interval (Budget): {t_frame_interval_ms:.2f} ms (Physical Arrival Step)")
+    print(f"  Frame processing interval (Budget): {t_frame_interval_ms:.2f} ms (Periodic arrival interval)")
     print(f"  Window function                   : {getattr(config, 'WINDOW_FUNCTION', 'hann')} (center={getattr(config, 'CENTER_STFT', False)})")
     print(f"  Frequency bins (F)                : {n_freq} bins")
     print(f"  Frequency range                   : 0.0 - {sr / 2.0:.1f} Hz")
@@ -149,25 +149,39 @@ def run_analysis():
     mean_val, std_val = float(W.mean()), float(W.std())
     nan_count = int(np.isnan(W).sum())
     inf_count = int(np.isinf(W).sum())
-    dynamic_range_db = 20.0 * np.log10(max_val / max(1e-12, min_val[min_val > 0] if np.any(min_val > 0) else 1e-6))
+
+    # Xử lý Dynamic Range chuẩn xác trên các phần tử dương (W > 0)
+    positive_mask = W > 0
+    zero_count = int((W == 0).sum())
+    zero_ratio = (zero_count / float(W.size)) * 100.0
+
+    if np.any(positive_mask):
+        min_positive = float(W[positive_mask].min())
+        dynamic_range_db = 20.0 * np.log10(max_val / min_positive)
+    else:
+        min_positive = 0.0
+        dynamic_range_db = 0.0
 
     print("\n[2. NMF DICTIONARY SPECIFICATION (MEASURED & CALCULATED)]")
     print(f"  Dictionary file                   : {w_path.name}")
     print(f"  Matrix shape (F x C)              : {w_shape} (Freq Bins x Components)")
     print(f"  Total parameters                  : {W.size:,} floats")
-    print(f"  Storage precision (dtype)         : {w_dtype}")
-    print(f"  Storage size (FP32)               : {w_bytes:,} bytes ({w_kib:.2f} KiB)")
-    print(f"  Storage size (FP16 compact)       : {w_bytes // 2:,} bytes ({w_kib / 2.0:.2f} KiB) [TO BE VALIDATED]")
-    print(f"  Numerical range                   : Min={min_val:.5e} | Max={max_val:.5e}")
+    print(f"  Dtype (FP32 storage)              : {w_dtype} ({w_bytes:,} bytes / {w_kib:.2f} KiB) [MEASURED]")
+    print(f"  FP16 storage potential            : {w_bytes // 2:,} bytes ({w_kib / 2.0:.2f} KiB) [TO BE VALIDATED]")
+    print(f"  INT16 storage potential           : {w_bytes // 2:,} bytes ({w_kib / 2.0:.2f} KiB) [TO BE VALIDATED]")
+    print(f"  INT8 storage potential            : {w_bytes // 4:,} bytes ({w_kib / 4.0:.2f} KiB) [TO BE VALIDATED]")
+    print(f"  Absolute Min / Max                : [{min_val:.5e}, {max_val:.5e}]")
+    print(f"  Positive Minimum (W_min+)         : {min_positive:.5e}")
+    print(f"  Dynamic Range of Non-zeros (DR)   : ~{dynamic_range_db:.2f} dB (20*log10(W_max / W_min+))")
+    print(f"  Zero coefficient ratio (Sparsity) : {zero_ratio:.2f}% ({zero_count:,}/{W.size:,} elements)")
     print(f"  Distribution stats                : Mean={mean_val:.5e} | Std={std_val:.5e}")
-    print(f"  Dynamic Range                     : ~{dynamic_range_db:.2f} dB")
     print(f"  Integrity check                   : NaN={nan_count} | Inf={inf_count}")
     print(f"  Component breakdown               : Total={config.TOTAL_COMPONENTS} (Event={config.EVENT_COMPONENTS}, Bowl={config.BOWL_COMPONENTS}, Env={config.ENV_COMPONENTS})")
 
     # 3. PEAK DETECTOR SPECIFICATION
     peak_json = config.PEAK_PARAMS_PATH
-    prominence = config.DEFAULT_PEAK_PROMINENCE
-    distance = config.DEFAULT_PEAK_DISTANCE_FRAMES
+    prominence = getattr(config, "DEFAULT_PEAK_PROMINENCE", 0.01)
+    distance = getattr(config, "DEFAULT_PEAK_DISTANCE_FRAMES", 4)
     mae_train = None
     num_train_files_used = None
 
@@ -178,17 +192,19 @@ def run_analysis():
                 prominence = p_data.get("prominence", prominence)
                 distance = p_data.get("distance", distance)
                 mae_train = p_data.get("mae", None)
-                num_train_files_used = p_data.get("num_files", None)
+                # Đọc chuẩn key total_train_files từ peak_params.json
+                num_train_files_used = p_data.get("total_train_files", None)
         except Exception:
             pass
 
     min_event_distance_ms = distance * t_frame_interval_ms
 
-    print("\n[3. PEAK DETECTOR SPECIFICATION]")
+    print("\n[3. PEAK DETECTOR SPECIFICATION (CONFIGURATION & TRAIN PERFORMANCE)]")
     print(f"  Configuration source              : {peak_json.name if peak_json.is_file() else 'Config Defaults'}")
-    print(f"  Prominence threshold (P*)         : {prominence}")
-    print(f"  Minimum distance (D*)             : {distance} frames ({min_event_distance_ms:.2f} ms)")
-    print(f"  Training Performance (Count MAE)  : {mae_train:.2f} parts" if mae_train is not None else "  Training Performance (Count MAE)  : N/A")
+    print(f"  Prominence threshold (P*)         : {prominence} [FROZEN CONFIG]")
+    print(f"  Minimum distance (D*)             : {distance} frames ({min_event_distance_ms:.2f} ms) [FROZEN CONFIG]")
+    if mae_train is not None:
+        print(f"  Training Count MAE                : {mae_train:.2f} parts [MEASURED]")
 
     # 4. DATASET & TEMPORAL CHARACTERISTICS
     train_data = analyze_audio_dataset(config.TRAIN_AUDIO_DIR, config.TRAIN_AUDIO_DIR / "label.txt")
@@ -203,7 +219,7 @@ def run_analysis():
     print(f"  Min / Max File Duration           : [{train_data['min_duration']:.2f}s, {train_data['max_duration']:.2f}s]")
     print(f"  Total Workpieces (label.txt)      : Train={train_data['total_workpieces']} parts | Test={test_data['total_workpieces']} parts")
 
-    print(f"\n  Annotation Verification Status:")
+    print(f"\n  Dataset Provenance & Verification Status:")
     print(f"    - Audio training files count    : {train_data['count']}")
     print(f"    - Frame-annotated files count   : {annot_data['files_count']} ({annot_data['total_events']} confirmed events)")
     print(f"    - Peak-parameter source files   : {num_train_files_used if num_train_files_used is not None else 'Unrecorded'}")
@@ -211,37 +227,36 @@ def run_analysis():
     if num_train_files_used is not None and annot_data['files_count'] > 0 and num_train_files_used != annot_data['files_count']:
         print(f"    [!] WARNING: The number of files used for peak-parameter optimization ({num_train_files_used})")
         print(f"                 does not match the reported frame-annotated files ({annot_data['files_count']}).")
-        print(f"                 Please verify your train dataset split/annotation consistency.")
+        print(f"                 Please verify your dataset provenance split prior to thesis defense.")
 
     if annot_data["files_count"] > 0 and annot_data["intervals"]:
         min_dt = annot_data["min_interval"]
         max_rate = 1.0 / min_dt if min_dt > 0 else 0.0
-        print(f"\n  Temporal Inter-event Characteristics (Annotation Ground-Truth):")
-        print(f"    - Physical Min event gap (Δt_min): {min_dt * 1000.0:.2f} ms")
+        print(f"\n  Temporal Inter-event Ground-Truth (Observed Physics):")
+        print(f"    - Minimum observed gap (Δt_min)  : {min_dt * 1000.0:.2f} ms")
         print(f"    - Mean event gap                 : {annot_data['mean_interval'] * 1000.0:.2f} ms")
         print(f"    - Median event gap               : {annot_data['median_interval'] * 1000.0:.2f} ms")
         print(f"    - Std event gap                  : {annot_data['std_interval'] * 1000.0:.2f} ms")
         print(f"    - Max event gap                  : {annot_data['max_interval']:.2f} s")
         print(f"    - Physical Maximum Feed Rate     : {max_rate:.2f} events/s (R_max = 1 / Δt_min)")
+        print(f"    - Detector Distance Check        : D* * (H/fs) = {min_event_distance_ms:.2f} ms ≈ Δt_min ({min_dt * 1000.0:.2f} ms)")
 
-    # 5. COMPUTATIONAL COMPLEXITY PER FRAME
-    stft_flops = n_fft * int(np.log2(n_fft)) * 5  # Radix-2 / Split-radix approximation
+    # 5. COMPUTATIONAL WORKLOAD PER FRAME
     w_t_v_macs = n_freq * config.TOTAL_COMPONENTS
-    hesum_adds = config.EVENT_COMPONENTS
 
-    print("\n[5. COMPUTATIONAL WORKLOAD PER FRAME (CALCULATED & ESTIMATED)]")
-    print(f"  1. STFT (Real FFT 2048 pts)       : O(N log N) (~{stft_flops:,} FLOPs)")
-    print(f"  2. Log Compression (log1p)        : O(F) ({n_freq:,} operations)")
-    print(f"  3. Matrix Projection (W^T * V_t)  : O(F x C) ({w_t_v_macs:,} MACs / {w_t_v_macs * 2:,} FLOPs)")
-    print(f"  4. NNLS Solver (W: 1025 x 48)     : Iterative Active-Set / Gram Matrix 48x48 (Runtime Dependent)")
-    print(f"  5. Event Sum Accumulation (H_e)   : O(K_event) ({hesum_adds} additions)")
-    print(f"  6. Peak Detection                 : O(1) State Machine Transitions per frame")
+    print("\n[5. COMPUTATIONAL WORKLOAD PER FRAME (CALCULATED & SPECIFICATION)]")
+    print(f"  1. STFT (Real FFT 2048 pts)       : O(N log N)")
+    print(f"  2. Log Compression (log1p)        : O(F) ({n_freq:,} scalar operations)")
+    print(f"  3. Matrix Projection (W^T * V_t)  : O(F x C) ({w_t_v_macs:,} MACs / {w_t_v_macs * 2:,} FLOPs) [CALCULATED]")
+    print(f"  4. NNLS Solver (W: 1025 x 48)     : Iterative Active-Set (Complexity runtime & iteration dependent)")
+    print(f"  5. Event Sum Accumulation (H_e)   : O(K_event) (24 additions)")
+    print(f"  6. Peak Detection (State Machine) : O(1) state transitions per frame")
 
     # 6. ESTIMATED MEMORY FOOTPRINT ON MCU
     flash_w_measured = w_bytes
-    flash_w_fp16 = w_bytes // 2
     flash_hann_table_est = n_fft * 4  # 8 KiB
     flash_firmware_est = 40 * 1024    # ~40 KiB
+    total_flash_est = flash_w_measured + flash_hann_table_est + flash_firmware_est
 
     # Peak RAM workspace model
     ram_audio_ring = n_fft * 4        # 2048 float32 = 8 KiB
@@ -259,12 +274,11 @@ def run_analysis():
     print("\n[6. MEMORY FOOTPRINT MODEL (MEASURED vs ESTIMATED)]")
     print(f"  STATIC FLASH / ROM STORAGE:")
     print(f"    - W Matrix (FP32) [MEASURED]    : {flash_w_measured:,} bytes ({flash_w_measured / 1024.0:.2f} KiB)")
-    print(f"    - W Matrix (FP16) [CALCULATED]  : {flash_w_fp16:,} bytes ({flash_w_fp16 / 1024.0:.2f} KiB) [TO BE VALIDATED]")
     print(f"    - Hann Window Table [ESTIMATED] : ~{flash_hann_table_est / 1024.0:.2f} KiB")
-    print(f"    - Firmware Code [ESTIMATED]     : ~{flash_firmware_est / 1024.0:.2f} KiB (DSP math + NNLS runtime)")
-    print(f"    => Estimated Total Flash (FP32) : ~{(flash_w_measured + flash_hann_table_est + flash_firmware_est) / 1024.0:.2f} KiB")
+    print(f"    - Firmware Code [ESTIMATED]     : ~{flash_firmware_est / 1024.0:.2f} KiB")
+    print(f"    => Preliminary Flash Estimate   : ~{total_flash_est / 1024.0:.2f} KiB")
 
-    print(f"\n  DYNAMIC SRAM WORKSPACE MODEL (Peak Live Buffers for 1 Frame):")
+    print(f"\n  DYNAMIC SRAM WORKSPACE MODEL (One-Frame-At-A-Time Streaming):")
     print(f"    - Audio Ring Buffer (DMA/I2S)   : {ram_audio_ring / 1024.0:.2f} KiB")
     print(f"    - RFFT Complex Output (X_t)     : {ram_rfft_out / 1024.0:.2f} KiB")
     print(f"    - Log-Magnitude Spectrum (V_t)  : {ram_v_frame / 1024.0:.2f} KiB")
@@ -272,23 +286,23 @@ def run_analysis():
     print(f"    - NNLS Workspace (Gram + temp)  : ~{ram_nnls_workspace / 1024.0:.2f} KiB")
     print(f"    - Peak Detector FSM State       : <0.1 KiB")
     print(f"    - Stack & System Margin         : ~{ram_stack_rtos / 1024.0:.2f} KiB")
-    print(f"    => Estimated Peak Simultaneous  : ~{total_live_ram_est / 1024.0:.2f} KiB")
-    print(f"    => SRAM (+20% Engineering Margin: ~{ram_with_margin_est / 1024.0:.2f} KiB (*Note: Engineering margin, not algorithm requirement)")
+    print(f"    => Estimated Peak Runtime SRAM  : ~{total_live_ram_est / 1024.0:.2f} KiB")
+    print(f"    => Engineering SRAM Target (+20%: ~{ram_with_margin_est / 1024.0:.2f} KiB (*Note: Engineering margin, not algorithm requirement)")
 
     # 7. HARDWARE REQUIREMENT SUMMARY
-    print("\n" + "=" * 75)
+    print("\n" + "=" * 80)
     print("                      HARDWARE REQUIREMENT SUMMARY")
-    print("=" * 75)
-    print(f"  Frame Interval Budget           : {t_frame_interval_ms:.2f} ms")
-    print(f"  Estimated Flash (FP32)          : ~{(flash_w_measured + flash_hann_table_est + flash_firmware_est) / 1024.0:.1f} KiB")
-    print(f"  Estimated SRAM Required         : ~{total_live_ram_est / 1024.0:.1f} KiB (~{ram_with_margin_est / 1024.0:.1f} KiB with 20% margin)")
-    print(f"  Dictionary Precision            : FP32 ({w_kib:.1f} KiB) | FP16 ({w_kib / 2.0:.1f} KiB, NOT YET VALIDATED)")
-    print(f"  Main Computational Block        : NNLS (Iterative Solver)")
-    print(f"  Projection Workload             : {w_t_v_macs:,} MAC/frame")
-    print(f"  Required Arithmetic             : Single-Precision Floating-Point (FPU recommended / strongly preferred)")
-    print(f"  DSP / SIMD Instructions         : Recommended for Real-Time Headroom")
-    print(f"  MCU Hardware Selection Status   : Candidate comparison pending runtime profiling")
-    print("=" * 75 + "\n")
+    print("=" * 80)
+    print(f"  Frame Interval Budget             : {t_frame_interval_ms:.2f} ms")
+    print(f"  Estimated Flash (FP32)            : ~{total_flash_est / 1024.0:.1f} KiB (Preliminary Estimate)")
+    print(f"  Estimated SRAM Required           : ~{total_live_ram_est / 1024.0:.1f} KiB (~{ram_with_margin_est / 1024.0:.1f} KiB target)")
+    print(f"  Dictionary Precision              : FP32 ({w_kib:.1f} KiB) | FP16/INT16/INT8 (Numerical Validation: Pending)")
+    print(f"  Dominant Computation in Reference : NNLS (Iterative Solver)")
+    print(f"  Projection Workload               : {w_t_v_macs:,} MAC/frame")
+    print(f"  Required Arithmetic Support       : Floating-Point (FPU recommended / strongly preferred)")
+    print(f"  DSP / SIMD Instructions           : Recommended for Real-Time Headroom")
+    print(f"  MCU Hardware Selection Status     : Candidate comparison pending benchmark")
+    print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":
