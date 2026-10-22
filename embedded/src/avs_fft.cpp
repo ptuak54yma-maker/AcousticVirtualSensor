@@ -2,11 +2,35 @@
 
 #include <cmath>
 #include <complex>
-#include <limits>
 #include <vector>
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
+
+void fft_radix2(std::vector<std::complex<float>> &a) {
+    const size_t n = a.size();
+    for (size_t i = 1, j = 0; i < n; ++i) {
+        size_t bit = n >> 1U;
+        for (; j & bit; bit >>= 1U) j ^= bit;
+        j ^= bit;
+        if (i < j) std::swap(a[i], a[j]);
+    }
+
+    for (size_t len = 2; len <= n; len <<= 1U) {
+        const float angle = -2.0f * kPi / static_cast<float>(len);
+        const std::complex<float> wlen(std::cos(angle), std::sin(angle));
+        for (size_t i = 0; i < n; i += len) {
+            std::complex<float> w(1.0f, 0.0f);
+            for (size_t j = 0; j < len / 2; ++j) {
+                const auto u = a[i + j];
+                const auto v = a[i + j + len / 2] * w;
+                a[i + j] = u + v;
+                a[i + j + len / 2] = u - v;
+                w *= wlen;
+            }
+        }
+    }
+}
 }
 
 extern "C" void avs_make_hann(float *window, size_t length) {
@@ -22,21 +46,14 @@ extern "C" avs_status_t avs_compute_spectrum(const float *frame,
                                                 avs_spectrum_t *out) {
     if (!frame || !window || !out) return AVS_ERR_ARGUMENT;
 
-    // Simple O(N^2) real DFT is deliberately used as an easily auditable reference
-    // implementation for Stage 1. Replace with CMSIS-DSP RFFT for MCU builds.
-    // This implementation is suitable for correctness smoke tests, not realtime.
+    std::vector<std::complex<float>> fft(AVS_N_FFT);
+    for (size_t n = 0; n < AVS_N_FFT; ++n) {
+        fft[n] = std::complex<float>(frame[n] * window[n], 0.0f);
+    }
+    fft_radix2(fft);
+
     for (size_t k = 0; k < AVS_NUM_BINS; ++k) {
-        double re = 0.0;
-        double im = 0.0;
-        for (size_t n = 0; n < AVS_N_FFT; ++n) {
-            const double angle = -2.0 * static_cast<double>(kPi) *
-                                 static_cast<double>(k) * static_cast<double>(n) /
-                                 static_cast<double>(AVS_N_FFT);
-            const double x = static_cast<double>(frame[n]) * static_cast<double>(window[n]);
-            re += x * std::cos(angle);
-            im += x * std::sin(angle);
-        }
-        const float mag = static_cast<float>(std::sqrt(re * re + im * im));
+        const float mag = std::abs(fft[k]);
         out->magnitude[k] = mag;
         out->log_magnitude[k] = std::log1p(mag);
     }
