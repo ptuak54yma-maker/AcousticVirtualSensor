@@ -1,0 +1,20 @@
+name: Embedded Stage 1
+
+on:
+  push:
+    branches: ["embedded-stage1"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  native-smoke:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Configure host build
+        run: cmake -S embedded -B embedded/build -A x64
+      - name: Build
+        run: cmake --build embedded/build --config Release
+      - name: Run Stage 1 smoke tests
+        run: ctest --test-dir embedded/build -C Release --output-on-failure
