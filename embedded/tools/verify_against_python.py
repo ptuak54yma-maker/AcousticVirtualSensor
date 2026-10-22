@@ -83,6 +83,8 @@ def main() -> int:
                         help="Fail if max absolute activation error exceeds this value")
     parser.add_argument("--require-exact-peaks", action="store_true",
                         help="Fail if C++ peak indices differ from SciPy")
+    parser.add_argument("--report-only", action="store_true",
+                        help="Report numerical metrics but do not fail on activation/peak mismatch")
     args = parser.parse_args()
 
     audio, _ = load_audio(args.wav, target_sr=config.SAMPLE_RATE, remove_dc=False)
@@ -137,12 +139,15 @@ def main() -> int:
     failed = max_h > args.max_h_abs
     if args.require_exact_peaks and not np.array_equal(cpp_peaks, ref_peaks):
         failed = True
-    if failed:
+    if failed and not args.report_only:
         print("\nRESULT: FAIL — numerical tolerance not met.")
         return 21
-    print("\nRESULT: numerical activation threshold passed.")
+    if failed:
+        print("\nRESULT: REPORT ONLY — numeric mismatch did not fail this diagnostic run.")
+    else:
+        print("\nRESULT: activation threshold passed.")
     if not np.array_equal(cpp_peaks, ref_peaks):
-        print("NOTE: peak picking differs from SciPy on this file; inspect local maxima, prominence bases, and distance ties.")
+        print("NOTE: peak picking differs from SciPy; inspect local maxima, prominence bases, and distance ties.")
     return 0
 
 
