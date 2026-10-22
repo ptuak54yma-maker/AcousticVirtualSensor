@@ -19,6 +19,8 @@ extern "C" size_t avs_detect_peaks(const float *envelope,
     std::vector<Candidate> candidates;
 
     // SciPy selects the middle sample of a flat peak (rounded down).
+    // Keep all local maxima for distance suppression first: scipy.find_peaks
+    // applies distance before prominence filtering.
     size_t i = 1;
     while (i + 1 < length) {
         if (!(envelope[i] > envelope[i - 1])) {
@@ -54,27 +56,32 @@ extern "C" size_t avs_detect_peaks(const float *envelope,
             right_min = std::min(right_min, envelope[j]);
         }
         const float prom = height - std::max(left_min, right_min);
-        if (prom >= prominence) candidates.push_back({peak, height, prom});
+        candidates.push_back({peak, height, prom});
         i = right_edge + 1;
     }
 
-    // Match the usual SciPy distance rule: consider taller peaks first, then remove
-    // any lower-priority peak whose index is closer than min_distance.
+    // Consider taller peaks first, suppressing lower-priority candidates at
+    // distances strictly smaller than min_distance.
     std::sort(candidates.begin(), candidates.end(),
               [](const Candidate& a, const Candidate& b) { return a.height > b.height; });
 
-    std::vector<size_t> kept;
+    std::vector<Candidate> distance_kept;
     for (const auto &c : candidates) {
         bool too_close = false;
-        for (const size_t k : kept) {
-            const size_t d = (c.index > k) ? c.index - k : k - c.index;
+        for (const auto &k : distance_kept) {
+            const size_t d = (c.index > k.index) ? c.index - k.index : k.index - c.index;
             if (d < min_distance) { too_close = true; break; }
         }
-        if (!too_close) kept.push_back(c.index);
+        if (!too_close) distance_kept.push_back(c);
     }
-    std::sort(kept.begin(), kept.end());
+    std::sort(distance_kept.begin(), distance_kept.end(),
+              [](const Candidate& a, const Candidate& b) { return a.index < b.index; });
 
-    const size_t count = std::min(kept.size(), max_peaks);
-    for (size_t p = 0; p < count; ++p) peak_indices[p] = kept[p];
+    size_t count = 0;
+    for (const auto &c : distance_kept) {
+        if (c.prom < prominence) continue;
+        if (count >= max_peaks) break;
+        peak_indices[count++] = c.index;
+    }
     return count;
 }
