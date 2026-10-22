@@ -16,8 +16,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install dictionary export dependency
-        run: python -m pip install numpy
+      - name: Install Python reference dependencies
+        run: python -m pip install numpy scipy soundfile
       - name: Export frozen dictionary to C header
         run: python embedded/tools/export_dictionary.py --input models/nmf/W_standard.npy --output embedded/src/w_standard_data.h
       - name: Configure host build
@@ -26,3 +26,7 @@ jobs:
         run: cmake --build embedded/build --config Release
       - name: Run Stage 1 smoke tests
         run: ctest --test-dir embedded/build -C Release --output-on-failure
+      - name: Generate short deterministic test WAV
+        run: python embedded/tools/generate_smoke_wav.py --output embedded/build/avs_smoke.wav
+      - name: Compare C++ outputs to Python reference (diagnostic)
+        run: python embedded/tools/verify_against_python.py embedded/build/avs_smoke.wav --build-dir embedded/build --report-only
