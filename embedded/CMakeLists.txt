@@ -22,5 +22,12 @@ endif()
 add_executable(avs_smoke_test tests/smoke_test.cpp)
 target_link_libraries(avs_smoke_test PRIVATE avs_core)
 
+# The real model array is generated from the existing W_standard.npy by the
+# dictionary exporter. Keep smoke tests buildable before generating the header.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/w_standard_data.h")
+    add_executable(avs_infer src/main.cpp)
+    target_link_libraries(avs_infer PRIVATE avs_core)
+endif()
+
 enable_testing()
 add_test(NAME avs_smoke_test COMMAND avs_smoke_test)
