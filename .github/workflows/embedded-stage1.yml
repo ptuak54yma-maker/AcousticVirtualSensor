@@ -12,6 +12,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dictionary export dependency
+        run: python -m pip install numpy
+      - name: Export frozen dictionary to C header
+        run: python embedded/tools/export_dictionary.py --input models/nmf/W_standard.npy --output embedded/src/w_standard_data.h
       - name: Configure host build
         run: cmake -S embedded -B embedded/build -A x64
       - name: Build
