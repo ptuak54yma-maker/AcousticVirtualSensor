@@ -54,6 +54,10 @@ extern "C" void avs_make_hann(float *window, size_t length) {
     }
 }
 
+extern "C" avs_status_t avs_fft_init(void) {
+    return AVS_OK;
+}
+
 extern "C" avs_status_t avs_compute_spectrum(const float *frame,
                                                const float *window,
                                                avs_fft_workspace_t *workspace,

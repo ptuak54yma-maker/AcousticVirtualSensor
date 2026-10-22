@@ -1,0 +1,20 @@
+:name: AVS STM32F407VG firmware smoke test
+:description: Runs AVS bare-metal FFT/NNLS/peak checks on Renode's STM32F4 Discovery model.
+
+using sysbus
+mach create
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery-kit.repl
+cpu PerformanceInMips 125
+sysbus LoadELF @embedded/firmware/out/avs_stm32f407.elf
+sysbus.uart4 CreateFileBackend @__AVS_UART_LOG__
+start
+sleep 2
+pause
+$status_address = `sysbus GetSymbolAddress "avs_fw_test_status"`
+$frames_address = `sysbus GetSymbolAddress "avs_fw_frames_processed"`
+$peaks_address = `sysbus GetSymbolAddress "avs_fw_peak_count"`
+$status = `sysbus ReadDoubleWord $status_address`
+$frames = `sysbus ReadDoubleWord $frames_address`
+$peaks = `sysbus ReadDoubleWord $peaks_address`
+echo "AVS_STATUS=$status FRAMES=$frames PEAKS=$peaks"
+quit

@@ -30,6 +30,7 @@ typedef struct {
 
 /* Periodic Hann: scipy.signal.get_window("hann", N, fftbins=True). */
 void avs_make_hann(float *window, size_t length);
+avs_status_t avs_fft_init(void);
 
 /* Apply periodic Hann, unscaled real FFT, then log1p(abs(X)).
  * Does not remove DC: caller must reproduce the chosen Python entry point's
@@ -40,12 +41,24 @@ avs_status_t avs_compute_spectrum(const float *frame,
                                   avs_fft_workspace_t *workspace,
                                   avs_spectrum_t *out);
 
-/* Reusable solver workspace. Gram matrix storage is 48*48 FP32 (9 KiB).
- * Initialize once per fixed dictionary, then reuse for every frame.
+/* Caller-owned reusable solver workspace. It holds double-precision Gram
+ * and active-set/Cholesky scratch (about 38.5 KiB at K=48).
+ * Allocate it statically or
+ * in persistent storage, never as an automatic local on a small MCU stack.
+ * A workspace is mutable and not reentrant: use one per concurrent solver.
  */
 typedef struct {
-    float gram[AVS_NUM_COMPONENTS * AVS_NUM_COMPONENTS];
-    float diagonal_scale;
+    double gram[AVS_NUM_COMPONENTS * AVS_NUM_COMPONENTS];
+    double lower[AVS_NUM_COMPONENTS * AVS_NUM_COMPONENTS];
+    double rhs[AVS_NUM_COMPONENTS];
+    double solve_y[AVS_NUM_COMPONENTS];
+    double gradient[AVS_NUM_COMPONENTS];
+    double candidate[AVS_NUM_COMPONENTS];
+    double solution[AVS_NUM_COMPONENTS];
+    size_t active_index[AVS_NUM_COMPONENTS];
+    uint8_t passive[AVS_NUM_COMPONENTS];
+    double diagonal_scale;
+    double projected_gradient_tolerance;
     uint32_t initialized;
 } avs_nnls_workspace_t;
 
@@ -61,10 +74,14 @@ avs_status_t avs_solve_nnls(const float *v,
 
 float avs_sum_event_activations(const float *h, size_t components);
 
-/* Batch peak picking over a complete envelope. Returns number of peaks written.
- * Similar to scipy.signal.find_peaks for ordinary finite local maxima.
- * SciPy's plateau and tie-breaking behavior still requires reference validation.
+/* Batch peak picking over a complete finite envelope. `peak_indices` is both
+ * the scratch buffer and output, with capacity `max_peaks`; no heap is used.
+ * Returns the count, 0 for invalid/empty input, or AVS_PEAKS_OVERFLOW if the
+ * buffer cannot hold every local-max candidate (output is invalid on overflow).
+ * The caller owns the capacity and must provision it for the maximum candidate
+ * count it expects. SciPy-style plateau selection and distance priority apply.
  */
+#define AVS_PEAKS_OVERFLOW ((size_t)-1)
 size_t avs_detect_peaks(const float *envelope,
                         size_t length,
                         float prominence,

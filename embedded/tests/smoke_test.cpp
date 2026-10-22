@@ -7,6 +7,10 @@
 int main() {
     std::vector<float> hann(AVS_N_FFT);
     avs_make_hann(hann.data(), hann.size());
+    if (avs_fft_init() != AVS_OK) {
+        std::fprintf(stderr, "FFT initialization failed\n");
+        return 12;
+    }
 
     if (std::fabs(hann.front()) > 1e-6f ||
         std::fabs(hann.back()) > 0.002f ||
@@ -38,6 +42,27 @@ int main() {
         std::fprintf(stderr, "Plateau peak test failed: count=%zu index=%zu\n",
                      plateau_count, peaks[0]);
         return 4;
+    }
+
+    const float tied[] = {0.f, 2.f, 0.f, 2.f, 0.f};
+    const size_t tied_count = avs_detect_peaks(tied, 5, 0.0f, 3, peaks, 5);
+    if (tied_count != 1 || peaks[0] != 3) {
+        std::fprintf(stderr, "Equal-height distance priority failed: count=%zu index=%zu\n",
+                     tied_count, peaks[0]);
+        return 9;
+    }
+
+    const float many_peaks[] = {0.f, 2.f, 0.f, 1.f, 0.f, 3.f, 0.f};
+    const size_t overflow = avs_detect_peaks(many_peaks, 7, 0.0f, 1, peaks, 2);
+    if (overflow != AVS_PEAKS_OVERFLOW) {
+        std::fprintf(stderr, "Peak capacity overflow was not reported: %zu\n", overflow);
+        return 10;
+    }
+
+    const float invalid_env[] = {0.f, 1.f, NAN, 1.f, 0.f};
+    if (avs_detect_peaks(invalid_env, 5, 0.0f, 1, peaks, 5) != 0) {
+        std::fprintf(stderr, "Non-finite envelope was not rejected\n");
+        return 11;
     }
 
     std::vector<float> w(AVS_NUM_BINS * AVS_NUM_COMPONENTS, 0.0f);
@@ -83,6 +108,7 @@ int main() {
         return 8;
     }
 
-    std::puts("AVS Stage 1 native smoke tests passed.");
+    std::printf("AVS Stage 1 native smoke tests passed (NNLS workspace=%zu bytes).\n",
+                sizeof(avs_nnls_workspace_t));
     return 0;
 }

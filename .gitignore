@@ -31,6 +31,12 @@ data/test/*.wav
 
 # Embedded host build and generated frozen model header
 embedded/build/
+embedded/firmware/_deps/
+embedded/firmware/build/
+embedded/firmware/out/
+embedded/firmware/sim/uart.log.*
+embedded/firmware/sim/run_renode.generated.resc
+embedded/firmware/sim/run_renode_gui.generated.resc
 embedded/src/w_standard_data.h
 
 !models/peak_detection/peak_params.json

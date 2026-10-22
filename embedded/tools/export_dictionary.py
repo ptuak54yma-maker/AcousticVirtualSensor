@@ -2,6 +2,7 @@
 """Export the existing W_standard.npy as a C float array; does not train NMF."""
 import argparse
 from pathlib import Path
+import sys
 import numpy as np
 
 def main():
@@ -27,6 +28,10 @@ def main():
         for i in range(0, flat.size, 6):
             f.write("    " + ", ".join(f"{float(x):.9e}f" for x in flat[i:i+6]) + ",\n")
         f.write("};\n\n#endif\n")
+    # Windows may use a legacy console encoding that cannot print the
+    # repository's Vietnamese path. Keep this utility successful in that case.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     print(f"Wrote {out} ({flat.size} float32 values; {flat.nbytes} bytes raw)")
 
 if __name__ == "__main__":

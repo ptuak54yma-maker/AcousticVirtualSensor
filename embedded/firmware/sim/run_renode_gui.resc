@@ -1,0 +1,12 @@
+:name: AVS STM32F407VG interactive simulation
+:description: Shows the AVS bare-metal smoke test and UART output in Renode.
+
+using sysbus
+mach create
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery-kit.repl
+cpu PerformanceInMips 125
+sysbus LoadELF @embedded/firmware/out/avs_stm32f407.elf
+showAnalyzer sysbus.uart4
+start
+sleep 2
+pause

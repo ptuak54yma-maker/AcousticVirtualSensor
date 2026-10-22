@@ -2,47 +2,47 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 constexpr size_t K = AVS_NUM_COMPONENTS;
 constexpr size_t F = AVS_NUM_BINS;
 
-bool cholesky_solve(const float *gram,
-                    const float *rhs,
+bool cholesky_solve(const double *gram,
+                    const double *rhs,
                     const size_t *active_index,
                     size_t n_active,
-                    float ridge,
-                    float *solution) {
+                    double ridge,
+                    double *solution,
+                    double *lower,
+                    double *y) {
     if (n_active == 0) return true;
-
-    float lower[K * K] = {};
-    float y[K] = {};
 
     for (size_t i = 0; i < n_active; ++i) {
         for (size_t j = 0; j <= i; ++j) {
-            float value = gram[active_index[i] * K + active_index[j]];
+            double value = gram[active_index[i] * K + active_index[j]];
             if (i == j) value += ridge;
             for (size_t q = 0; q < j; ++q) {
                 value -= lower[i * K + q] * lower[j * K + q];
             }
             if (i == j) {
-                if (!(value > 1e-20f) || !std::isfinite(value)) return false;
+                if (!(value > 0.0) || !std::isfinite(value)) return false;
                 lower[i * K + j] = std::sqrt(value);
             } else {
-                const float denom = lower[j * K + j];
-                if (!(denom > 0.0f)) return false;
+                const double denom = lower[j * K + j];
+                if (!(denom > 0.0)) return false;
                 lower[i * K + j] = value / denom;
             }
         }
     }
 
     for (size_t i = 0; i < n_active; ++i) {
-        float value = rhs[active_index[i]];
+        double value = rhs[active_index[i]];
         for (size_t j = 0; j < i; ++j) value -= lower[i * K + j] * y[j];
         y[i] = value / lower[i * K + i];
     }
     for (size_t rev = n_active; rev-- > 0;) {
-        float value = y[rev];
+        double value = y[rev];
         for (size_t j = rev + 1; j < n_active; ++j) {
             value -= lower[j * K + rev] * solution[active_index[j]];
         }
@@ -55,19 +55,21 @@ bool cholesky_solve(const float *gram,
 extern "C" avs_status_t avs_nnls_init(avs_nnls_workspace_t *workspace,
                                       const float *w_row_major) {
     if (!workspace || !w_row_major) return AVS_ERR_ARGUMENT;
-    std::fill(workspace->gram, workspace->gram + K * K, 0.0f);
-    double diag_sum = 0.0;
+    workspace->initialized = 0u;
+    std::fill(workspace->gram, workspace->gram + K * K, 0.0);
 
-    for (size_t f = 0; f < F; ++f) {
-        for (size_t j = 0; j < K; ++j) {
+    double max_column_l1 = 0.0;
+    for (size_t j = 0; j < K; ++j) {
+        double column_l1 = 0.0;
+        for (size_t f = 0; f < F; ++f) {
             const float value = w_row_major[f * K + j];
-            if (!std::isfinite(value) || value < 0.0f) {
-                workspace->initialized = 0u;
-                return AVS_ERR_NUMERIC;
-            }
+            if (!std::isfinite(value) || value < 0.0f) return AVS_ERR_NUMERIC;
+            column_l1 += std::fabs(static_cast<double>(value));
         }
+        max_column_l1 = std::max(max_column_l1, column_l1);
     }
 
+    double minimum_diagonal = std::numeric_limits<double>::infinity();
     for (size_t i = 0; i < K; ++i) {
         for (size_t j = i; j < K; ++j) {
             double sum = 0.0;
@@ -75,12 +77,21 @@ extern "C" avs_status_t avs_nnls_init(avs_nnls_workspace_t *workspace,
                 sum += static_cast<double>(w_row_major[f * K + i]) *
                        static_cast<double>(w_row_major[f * K + j]);
             }
-            workspace->gram[i * K + j] = static_cast<float>(sum);
-            workspace->gram[j * K + i] = static_cast<float>(sum);
+            workspace->gram[i * K + j] = sum;
+            workspace->gram[j * K + i] = sum;
         }
-        diag_sum += workspace->gram[i * K + i];
+        minimum_diagonal = std::min(minimum_diagonal,
+                                    workspace->gram[i * K + i]);
     }
-    workspace->diagonal_scale = static_cast<float>(diag_sum / static_cast<double>(K));
+
+    // scipy.optimize.nnls uses the Lawson-Hanson active-set method with a
+    // projected-gradient tolerance derived from ||W||_1 and double precision.
+    // Mirror that scale instead of multiplying the caller epsilon by ||W^T v||.
+    const double scipy_style_tolerance =
+        10.0 * static_cast<double>(std::max(F, K)) *
+        std::numeric_limits<double>::epsilon() * max_column_l1;
+    workspace->projected_gradient_tolerance = scipy_style_tolerance;
+    workspace->diagonal_scale = minimum_diagonal;
     workspace->initialized = 1u;
     return AVS_OK;
 }
@@ -100,99 +111,115 @@ extern "C" avs_status_t avs_solve_nnls(const float *v,
         if (!std::isfinite(v[f]) || v[f] < 0.0f) return AVS_ERR_NUMERIC;
     }
 
-    float rhs[K] = {};
+    std::fill(workspace->rhs, workspace->rhs + K, 0.0);
+    std::fill(workspace->solution, workspace->solution + K, 0.0);
+    std::fill(workspace->passive, workspace->passive + K,
+              static_cast<uint8_t>(0));
+    std::fill(h_out, h_out + K, 0.0f);
     for (size_t j = 0; j < K; ++j) {
         double sum = 0.0;
         for (size_t f = 0; f < F; ++f) {
             sum += static_cast<double>(w_row_major[f * K + j]) *
                    static_cast<double>(v[f]);
         }
-        rhs[j] = static_cast<float>(sum);
-        h_out[j] = 0.0f;
+        workspace->rhs[j] = sum;
     }
 
-    bool passive[K] = {};
-    float gradient[K] = {};
-    float candidate[K] = {};
-    size_t active_index[K] = {};
-    const float rhs_scale = std::max(1.0f, *std::max_element(rhs, rhs + K));
-    const float grad_tol = tolerance * rhs_scale;
-    const float ridge = std::max(1e-12f, workspace->diagonal_scale * 1e-8f);
-
+    const double grad_tol = std::max(
+        static_cast<double>(tolerance), workspace->projected_gradient_tolerance);
+    const double ridge = std::max(1e-24, workspace->diagonal_scale * 1e-12);
     unsigned iterations = 0;
     while (iterations < max_iterations) {
         ++iterations;
-        float max_gradient = grad_tol;
+        double max_gradient = grad_tol;
         size_t entering = K;
 
         for (size_t j = 0; j < K; ++j) {
-            float prediction = 0.0f;
+            double prediction = 0.0;
             for (size_t k = 0; k < K; ++k) {
-                prediction += workspace->gram[j * K + k] * h_out[k];
+                prediction += workspace->gram[j * K + k] *
+                              workspace->solution[k];
             }
-            gradient[j] = rhs[j] - prediction;
-            if (!passive[j] && gradient[j] > max_gradient) {
-                max_gradient = gradient[j];
+            workspace->gradient[j] = workspace->rhs[j] - prediction;
+            if (!workspace->passive[j] &&
+                workspace->gradient[j] > max_gradient) {
+                max_gradient = workspace->gradient[j];
                 entering = j;
             }
         }
         if (entering == K) {
             for (size_t j = 0; j < K; ++j) {
-                if (!std::isfinite(h_out[j]) || h_out[j] < 0.0f) return AVS_ERR_NUMERIC;
+                if (!std::isfinite(workspace->solution[j]) ||
+                    workspace->solution[j] < 0.0) {
+                    return AVS_ERR_NUMERIC;
+                }
+                h_out[j] = static_cast<float>(workspace->solution[j]);
             }
             return AVS_OK;
         }
 
-        passive[entering] = true;
-
+        workspace->passive[entering] = 1u;
         bool inner_done = false;
         unsigned inner_iterations = 0;
-        while (!inner_done && inner_iterations < K + 1 && iterations < max_iterations) {
+        while (!inner_done && inner_iterations < K + 1 &&
+               iterations < max_iterations) {
             ++inner_iterations;
             ++iterations;
             size_t active_count = 0;
             for (size_t j = 0; j < K; ++j) {
-                if (passive[j]) active_index[active_count++] = j;
-                candidate[j] = 0.0f;
+                if (workspace->passive[j]) {
+                    workspace->active_index[active_count++] = j;
+                }
+                workspace->candidate[j] = 0.0;
             }
 
-            bool solved = cholesky_solve(workspace->gram, rhs, active_index,
-                                         active_count, 0.0f, candidate);
+            bool solved = cholesky_solve(workspace->gram, workspace->rhs,
+                                         workspace->active_index, active_count,
+                                         0.0, workspace->candidate,
+                                         workspace->lower, workspace->solve_y);
             if (!solved) {
-                std::fill(candidate, candidate + K, 0.0f);
-                solved = cholesky_solve(workspace->gram, rhs, active_index,
-                                         active_count, ridge, candidate);
+                std::fill(workspace->candidate,
+                          workspace->candidate + K, 0.0);
+                solved = cholesky_solve(workspace->gram, workspace->rhs,
+                                        workspace->active_index, active_count,
+                                        ridge, workspace->candidate,
+                                        workspace->lower, workspace->solve_y);
             }
             if (!solved) return AVS_ERR_NUMERIC;
 
             bool all_positive = true;
             for (size_t p = 0; p < active_count; ++p) {
-                if (candidate[active_index[p]] <= 0.0f) {
+                if (workspace->candidate[workspace->active_index[p]] <= 0.0) {
                     all_positive = false;
                     break;
                 }
             }
             if (all_positive) {
                 for (size_t p = 0; p < active_count; ++p) {
-                    const size_t j = active_index[p];
-                    h_out[j] = candidate[j];
+                    const size_t j = workspace->active_index[p];
+                    workspace->solution[j] = workspace->candidate[j];
                 }
                 inner_done = true;
             } else {
-                float alpha = 1.0f;
+                double alpha = 1.0;
                 for (size_t p = 0; p < active_count; ++p) {
-                    const size_t j = active_index[p];
-                    if (candidate[j] <= 0.0f) {
-                        const float denom = h_out[j] - candidate[j];
-                        if (denom > 0.0f) alpha = std::min(alpha, h_out[j] / denom);
+                    const size_t j = workspace->active_index[p];
+                    if (workspace->candidate[j] <= 0.0) {
+                        const double denom =
+                            workspace->solution[j] - workspace->candidate[j];
+                        if (denom > 0.0) {
+                            alpha = std::min(alpha,
+                                workspace->solution[j] / denom);
+                        }
                     }
                 }
                 for (size_t p = 0; p < active_count; ++p) {
-                    const size_t j = active_index[p];
-                    h_out[j] += alpha * (candidate[j] - h_out[j]);
-                    if (h_out[j] <= tolerance) {
-                        h_out[j] = 0.0f;
-                        passive[j] = false;
+                    const size_t j = workspace->active_index[p];
+                    workspace->solution[j] += alpha *
+                        (workspace->candidate[j] - workspace->solution[j]);
+                    if (workspace->solution[j] <= 0.0) {
+                        workspace->solution[j] = 0.0;
+                        workspace->passive[j] = 0u;
                     }
                 }
             }

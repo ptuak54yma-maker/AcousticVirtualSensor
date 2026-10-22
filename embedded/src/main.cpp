@@ -51,10 +51,20 @@ int main(int argc, char **argv) {
         std::cerr << "Cannot write output: " << output_path << "\n";
         return 7;
     }
+    const std::string spectrum_path = output_path + ".spectrum.csv";
+    std::ofstream spectrum_output(spectrum_path);
+    if (!spectrum_output) {
+        std::cerr << "Cannot write spectrum output: " << spectrum_path << "\n";
+        return 11;
+    }
     output << "frame,h_event_sum";
     for (size_t j = 0; j < AVS_NUM_COMPONENTS; ++j) output << ",h" << j;
     output << "\n";
     output.precision(9);
+    spectrum_output << "frame";
+    for (size_t k = 0; k < AVS_NUM_BINS; ++k) spectrum_output << ",bin" << k;
+    spectrum_output << "\n";
+    spectrum_output.precision(9);
 
     avs_spectrum_t spectrum{};
     float h[AVS_NUM_COMPONENTS] = {};
@@ -83,6 +93,9 @@ int main(int argc, char **argv) {
                       << " with status " << static_cast<int>(nnls_status) << "\n";
             return 9;
         }
+        spectrum_output << frame_index;
+        for (float x : spectrum.log_magnitude) spectrum_output << "," << x;
+        spectrum_output << "\n";
         const float h_event = avs_sum_event_activations(h, AVS_NUM_COMPONENTS);
         envelope.push_back(h_event);
         output << frame_index << "," << h_event;
@@ -90,6 +103,7 @@ int main(int argc, char **argv) {
         output << "\n";
     }
     output.close();
+    spectrum_output.close();
 
     const std::string peaks_path = output_path + ".peaks.csv";
     std::ofstream peaks_file(peaks_path);
@@ -108,6 +122,7 @@ int main(int argc, char **argv) {
     std::cout << "Frames: " << num_frames << "\n";
     std::cout << "Peak count (C++ implementation): " << peak_count << "\n";
     std::cout << "Activation CSV: " << output_path << "\n";
+    std::cout << "Log-spectrum CSV: " << spectrum_path << "\n";
     std::cout << "Peak CSV: " << peaks_path << "\n";
     std::cout << "Native execution validates logic only; it is not STM32 timing evidence.\n";
     return 0;
