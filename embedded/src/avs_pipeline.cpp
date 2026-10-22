@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 
 namespace {
 constexpr size_t K = AVS_NUM_COMPONENTS;
@@ -59,6 +58,16 @@ extern "C" avs_status_t avs_nnls_init(avs_nnls_workspace_t *workspace,
     std::fill(workspace->gram, workspace->gram + K * K, 0.0f);
     double diag_sum = 0.0;
 
+    for (size_t f = 0; f < F; ++f) {
+        for (size_t j = 0; j < K; ++j) {
+            const float value = w_row_major[f * K + j];
+            if (!std::isfinite(value) || value < 0.0f) {
+                workspace->initialized = 0u;
+                return AVS_ERR_NUMERIC;
+            }
+        }
+    }
+
     for (size_t i = 0; i < K; ++i) {
         for (size_t j = i; j < K; ++j) {
             double sum = 0.0;
@@ -86,6 +95,9 @@ extern "C" avs_status_t avs_solve_nnls(const float *v,
         workspace->initialized != 1u || max_iterations == 0 ||
         !std::isfinite(tolerance) || tolerance <= 0.0f) {
         return AVS_ERR_ARGUMENT;
+    }
+    for (size_t f = 0; f < F; ++f) {
+        if (!std::isfinite(v[f]) || v[f] < 0.0f) return AVS_ERR_NUMERIC;
     }
 
     float rhs[K] = {};
@@ -124,7 +136,12 @@ extern "C" avs_status_t avs_solve_nnls(const float *v,
                 entering = j;
             }
         }
-        if (entering == K) return AVS_OK;
+        if (entering == K) {
+            for (size_t j = 0; j < K; ++j) {
+                if (!std::isfinite(h_out[j]) || h_out[j] < 0.0f) return AVS_ERR_NUMERIC;
+            }
+            return AVS_OK;
+        }
 
         passive[entering] = true;
 
@@ -189,8 +206,6 @@ extern "C" float avs_sum_event_activations(const float *h, size_t components) {
     if (!h) return 0.0f;
     const size_t n = std::min(components, static_cast<size_t>(AVS_EVENT_COMPONENTS));
     float sum = 0.0f;
-    for (size_t i = 0; i < n; ++i) {
-        if (std::isfinite(h[i])) sum += h[i];
-    }
+    for (size_t i = 0; i < n; ++i) sum += h[i];
     return sum;
 }
