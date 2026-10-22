@@ -32,6 +32,13 @@ int main() {
         std::fprintf(stderr, "Peak smoke test failed: count=%zu\n", n);
         return 3;
     }
+    const float plateau[] = {0.f, 1.f, 1.f, 1.f, 0.f};
+    const size_t plateau_count = avs_detect_peaks(plateau, 5, 0.5f, 1, peaks, 4);
+    if (plateau_count != 1 || peaks[0] != 2) {
+        std::fprintf(stderr, "Plateau peak test failed: count=%zu index=%zu\n",
+                     plateau_count, peaks[0]);
+        return 4;
+    }
 
     std::vector<float> w(AVS_NUM_BINS * AVS_NUM_COMPONENTS, 0.0f);
     for (size_t j = 0; j < AVS_NUM_COMPONENTS; ++j) {
@@ -46,20 +53,20 @@ int main() {
     avs_nnls_workspace_t nnls_workspace{};
     if (avs_nnls_init(&nnls_workspace, w.data()) != AVS_OK) {
         std::fprintf(stderr, "NNLS initialization failed\n");
-        return 4;
+        return 5;
     }
     float solution[AVS_NUM_COMPONENTS] = {};
     const auto status = avs_solve_nnls(v.data(), w.data(), &nnls_workspace,
                                         solution, 200, 1e-6f);
     if (status != AVS_OK) {
         std::fprintf(stderr, "NNLS solver failed: status=%d\n", static_cast<int>(status));
-        return 5;
+        return 6;
     }
     for (size_t j = 0; j < AVS_NUM_COMPONENTS; ++j) {
         if (std::fabs(solution[j] - expected[j]) > 1e-4f) {
             std::fprintf(stderr, "NNLS mismatch at %zu: got=%g expected=%g\n",
                          j, solution[j], expected[j]);
-            return 6;
+            return 7;
         }
     }
 
@@ -73,7 +80,7 @@ int main() {
     if (avs_compute_spectrum(frame.data(), hann.data(), &fft_workspace, &spectrum) != AVS_OK ||
         !(spectrum.log_magnitude[32] > 5.0f)) {
         std::fprintf(stderr, "FFT/log-magnitude smoke test failed\n");
-        return 7;
+        return 8;
     }
 
     std::puts("AVS Stage 1 native smoke tests passed.");
