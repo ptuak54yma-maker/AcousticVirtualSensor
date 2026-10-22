@@ -33,8 +33,6 @@ int main() {
         return 3;
     }
 
-    // Synthetic dictionary: each component owns one distinct frequency bin.
-    // It tests the solver mechanics without claiming equivalence to the trained W.
     std::vector<float> w(AVS_NUM_BINS * AVS_NUM_COMPONENTS, 0.0f);
     for (size_t j = 0; j < AVS_NUM_COMPONENTS; ++j) {
         w[(j * 7) * AVS_NUM_COMPONENTS + j] = 1.0f;
@@ -45,13 +43,13 @@ int main() {
         expected[j] = 0.1f + 0.025f * static_cast<float>(j);
         v[j * 7] = expected[j];
     }
-    avs_nnls_workspace_t workspace{};
-    if (avs_nnls_init(&workspace, w.data()) != AVS_OK) {
+    avs_nnls_workspace_t nnls_workspace{};
+    if (avs_nnls_init(&nnls_workspace, w.data()) != AVS_OK) {
         std::fprintf(stderr, "NNLS initialization failed\n");
         return 4;
     }
     float solution[AVS_NUM_COMPONENTS] = {};
-    const auto status = avs_solve_nnls(v.data(), w.data(), &workspace,
+    const auto status = avs_solve_nnls(v.data(), w.data(), &nnls_workspace,
                                         solution, 200, 1e-6f);
     if (status != AVS_OK) {
         std::fprintf(stderr, "NNLS solver failed: status=%d\n", static_cast<int>(status));
@@ -65,14 +63,14 @@ int main() {
         }
     }
 
-    // FFT smoke test: periodic Hann should produce a positive log-magnitude spectrum.
     std::vector<float> frame(AVS_N_FFT, 0.0f);
     for (size_t n = 0; n < AVS_N_FFT; ++n) {
         frame[n] = std::sin(2.0f * 3.14159265358979323846f * 32.0f *
                             static_cast<float>(n) / static_cast<float>(AVS_N_FFT));
     }
+    avs_fft_workspace_t fft_workspace{};
     avs_spectrum_t spectrum{};
-    if (avs_compute_spectrum(frame.data(), hann.data(), &spectrum) != AVS_OK ||
+    if (avs_compute_spectrum(frame.data(), hann.data(), &fft_workspace, &spectrum) != AVS_OK ||
         !(spectrum.log_magnitude[32] > 5.0f)) {
         std::fprintf(stderr, "FFT/log-magnitude smoke test failed\n");
         return 7;
