@@ -39,8 +39,9 @@ int main(int argc, char **argv) {
 
     std::vector<float> window(AVS_N_FFT);
     avs_make_hann(window.data(), window.size());
-    avs_nnls_workspace_t workspace{};
-    if (avs_nnls_init(&workspace, AVS_W_STANDARD) != AVS_OK) {
+    avs_fft_workspace_t fft_workspace{};
+    avs_nnls_workspace_t nnls_workspace{};
+    if (avs_nnls_init(&nnls_workspace, AVS_W_STANDARD) != AVS_OK) {
         std::cerr << "Could not initialize NNLS workspace.\n";
         return 6;
     }
@@ -69,13 +70,14 @@ int main(int argc, char **argv) {
         float frame[AVS_N_FFT];
         for (size_t i = 0; i < AVS_N_FFT; ++i) frame[i] = samples[start + i] - mean;
 
-        const auto fft_status = avs_compute_spectrum(frame, window.data(), &spectrum);
+        const auto fft_status = avs_compute_spectrum(frame, window.data(), &fft_workspace,
+                                                      &spectrum);
         if (fft_status != AVS_OK) {
             std::cerr << "Spectrum stage failed at frame " << frame_index << "\n";
             return 8;
         }
         const auto nnls_status = avs_solve_nnls(spectrum.log_magnitude, AVS_W_STANDARD,
-                                                 &workspace, h, 20000, 1e-6f);
+                                                 &nnls_workspace, h, 20000, 1e-6f);
         if (nnls_status != AVS_OK) {
             std::cerr << "NNLS failed at frame " << frame_index
                       << " with status " << static_cast<int>(nnls_status) << "\n";
