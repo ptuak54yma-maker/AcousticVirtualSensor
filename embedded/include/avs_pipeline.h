@@ -18,8 +18,13 @@ typedef enum {
     AVS_ERR_NO_CONVERGENCE = -4
 } avs_status_t;
 
+/* Explicit FFT scratch storage: 16 KiB. Allocate statically in MCU firmware. */
 typedef struct {
-    float magnitude[AVS_NUM_BINS];
+    float real[AVS_N_FFT];
+    float imag[AVS_N_FFT];
+} avs_fft_workspace_t;
+
+typedef struct {
     float log_magnitude[AVS_NUM_BINS];
 } avs_spectrum_t;
 
@@ -32,6 +37,7 @@ void avs_make_hann(float *window, size_t length);
  */
 avs_status_t avs_compute_spectrum(const float *frame,
                                   const float *window,
+                                  avs_fft_workspace_t *workspace,
                                   avs_spectrum_t *out);
 
 /* Reusable solver workspace. Gram matrix storage is 48*48 FP32 (9 KiB).
@@ -56,8 +62,8 @@ avs_status_t avs_solve_nnls(const float *v,
 float avs_sum_event_activations(const float *h, size_t components);
 
 /* Batch peak picking over a complete envelope. Returns number of peaks written.
- * Similar to scipy.signal.find_peaks for ordinary non-plateau finite signals.
- * Plateau/tie edge cases must be verified against SciPy reference vectors.
+ * Similar to scipy.signal.find_peaks for ordinary finite local maxima.
+ * SciPy's plateau and tie-breaking behavior still requires reference validation.
  */
 size_t avs_detect_peaks(const float *envelope,
                         size_t length,
