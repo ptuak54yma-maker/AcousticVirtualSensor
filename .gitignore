@@ -29,6 +29,10 @@ outputs/logs/
 data/train/*.wav
 data/test/*.wav
 
+# Embedded host build and generated frozen model header
+embedded/build/
+embedded/src/w_standard_data.h
+
 !models/peak_detection/peak_params.json
 !data/train/label.txt
 !data/test/label.txt
