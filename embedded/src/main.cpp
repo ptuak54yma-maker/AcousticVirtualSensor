@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -22,13 +24,14 @@ int main(int argc, char **argv) {
         std::cerr << "Cannot open input: " << input_path << "\n";
         return 3;
     }
-    std::vector<float> samples((std::istreambuf_iterator<char>(input)),
-                               std::istreambuf_iterator<char>());
-    if (samples.size() % sizeof(float) != 0) {
+    std::vector<char> bytes((std::istreambuf_iterator<char>(input)),
+                            std::istreambuf_iterator<char>());
+    if (bytes.size() % sizeof(float) != 0) {
         std::cerr << "Input byte count is not a multiple of float32.\n";
         return 4;
     }
-    samples.resize(samples.size() / sizeof(float));
+    std::vector<float> samples(bytes.size() / sizeof(float));
+    if (!bytes.empty()) std::memcpy(samples.data(), bytes.data(), bytes.size());
     if (samples.size() < AVS_N_FFT) {
         std::cerr << "Input must contain at least " << AVS_N_FFT << " float samples.\n";
         return 5;
@@ -101,9 +104,9 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < peak_count; ++i) peaks_file << peak_indices[i] << "\n";
 
     std::cout << "Frames: " << num_frames << "\n";
-    std::cout << "Peak count (embedded implementation): " << peak_count << "\n";
+    std::cout << "Peak count (C++ implementation): " << peak_count << "\n";
     std::cout << "Activation CSV: " << output_path << "\n";
     std::cout << "Peak CSV: " << peaks_path << "\n";
-    std::cout << "Note: native host execution is for logic validation, not STM32 timing.\n";
+    std::cout << "Native execution validates logic only; it is not STM32 timing evidence.\n";
     return 0;
 }
