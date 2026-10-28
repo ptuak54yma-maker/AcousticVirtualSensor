@@ -1,0 +1,27 @@
+menu "Acoustic Virtual Sensor board"
+
+config AVS_DEMO_MODE
+    bool "Run synthetic serial-only demo (no microphone required)"
+    default y
+
+config AVS_I2S_BCLK_GPIO
+    int "I2S BCLK GPIO"
+    range 0 48
+    default 4
+
+config AVS_I2S_WS_GPIO
+    int "I2S WS/LRCLK GPIO"
+    range 0 48
+    default 5
+
+config AVS_I2S_DIN_GPIO
+    int "I2S microphone data GPIO"
+    range 0 48
+    default 6
+
+config AVS_I2S_PORT
+    int "I2S controller"
+    range 0 1
+    default 0
+
+endmenu

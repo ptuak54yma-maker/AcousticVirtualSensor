@@ -1,0 +1,6 @@
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+main/w_standard_data.h
+arduino_serial_demo/AVS_ESP32S3_Demo/w_standard_data.h
