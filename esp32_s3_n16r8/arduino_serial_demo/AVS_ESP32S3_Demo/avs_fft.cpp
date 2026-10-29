@@ -45,18 +45,38 @@ extern "C" void avs_make_hann(float *window, size_t length) {
 
 extern "C" avs_status_t avs_fft_init(void) { return AVS_OK; }
 
-extern "C" avs_status_t avs_compute_spectrum(
-    const float *frame, const float *window, avs_fft_workspace_t *workspace,
-    avs_spectrum_t *out) {
-    if (!frame || !window || !workspace || !out) return AVS_ERR_ARGUMENT;
+extern "C" avs_status_t avs_prepare_fft_input(
+    const float *frame, const float *window, avs_fft_workspace_t *workspace) {
+    if (!frame || !window || !workspace) return AVS_ERR_ARGUMENT;
     for (size_t n = 0; n < AVS_N_FFT; ++n) {
         workspace->real[n] = frame[n] * window[n];
         workspace->imag[n] = 0.0f;
     }
+    return AVS_OK;
+}
+
+extern "C" avs_status_t avs_execute_fft(avs_fft_workspace_t *workspace) {
+    if (!workspace) return AVS_ERR_ARGUMENT;
     fft_radix2(workspace->real, workspace->imag, AVS_N_FFT);
+    return AVS_OK;
+}
+
+extern "C" avs_status_t avs_compute_log_spectrum(
+    const avs_fft_workspace_t *workspace, avs_spectrum_t *out) {
+    if (!workspace || !out) return AVS_ERR_ARGUMENT;
     for (size_t k = 0; k < AVS_NUM_BINS; ++k) {
         const float re = workspace->real[k], im = workspace->imag[k];
         out->log_magnitude[k] = std::log1p(std::sqrt(re * re + im * im));
     }
     return AVS_OK;
+}
+
+extern "C" avs_status_t avs_compute_spectrum(
+    const float *frame, const float *window, avs_fft_workspace_t *workspace,
+    avs_spectrum_t *out) {
+    avs_status_t status = avs_prepare_fft_input(frame, window, workspace);
+    if (status != AVS_OK) return status;
+    status = avs_execute_fft(workspace);
+    if (status != AVS_OK) return status;
+    return avs_compute_log_spectrum(workspace, out);
 }

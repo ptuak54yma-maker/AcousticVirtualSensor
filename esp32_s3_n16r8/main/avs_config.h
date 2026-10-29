@@ -7,6 +7,7 @@
 #define AVS_NUM_BINS          1025u
 #define AVS_NUM_COMPONENTS    48u
 #define AVS_EVENT_COMPONENTS  24u
+#define AVS_NNLS_ITERATIONS   64u
 #define AVS_PEAK_DISTANCE     4u
 /* Initial embedded baseline. Replace with the project's trained peak settings
  * after comparing this device's envelope against the Python reference. */

@@ -31,17 +31,15 @@ avs_status_t avs_compute_spectrum(const float *frame, const float *window,
                                   avs_spectrum_t *out);
 
 typedef struct {
-    double gram[AVS_NUM_COMPONENTS * AVS_NUM_COMPONENTS];
-    double lower[AVS_NUM_COMPONENTS * AVS_NUM_COMPONENTS];
-    double rhs[AVS_NUM_COMPONENTS];
-    double solve_y[AVS_NUM_COMPONENTS];
-    double gradient[AVS_NUM_COMPONENTS];
-    double candidate[AVS_NUM_COMPONENTS];
-    double solution[AVS_NUM_COMPONENTS];
-    size_t active_index[AVS_NUM_COMPONENTS];
-    uint8_t passive[AVS_NUM_COMPONENTS];
-    double diagonal_scale;
-    double projected_gradient_tolerance;
+    float gram[AVS_NUM_COMPONENTS * AVS_NUM_COMPONENTS];
+    float rhs[AVS_NUM_COMPONENTS];
+    float solution[AVS_NUM_COMPONENTS];
+    float candidate[AVS_NUM_COMPONENTS];
+    float momentum[AVS_NUM_COMPONENTS];
+    float lipschitz_bound;
+    float step_size;
+    float last_relative_projected_gradient;
+    uint32_t last_iterations;
     uint32_t initialized;
 } avs_nnls_workspace_t;
 
@@ -49,7 +47,7 @@ avs_status_t avs_nnls_init(avs_nnls_workspace_t *workspace,
                            const float *w_row_major);
 avs_status_t avs_solve_nnls(const float *v, const float *w_row_major,
                             avs_nnls_workspace_t *workspace, float *h_out,
-                            unsigned max_iterations, float tolerance);
+                            unsigned max_iterations);
 float avs_sum_event_activations(const float *h, size_t components);
 
 #define AVS_PEAKS_OVERFLOW ((size_t)-1)

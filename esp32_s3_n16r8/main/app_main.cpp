@@ -17,8 +17,7 @@ namespace {
 constexpr char kTag[] = "AVS";
 constexpr size_t kReadSamples = 256;
 constexpr size_t kWindowFrames = 3u * AVS_SAMPLE_RATE / AVS_HOP_LENGTH;
-constexpr unsigned kNnlsIterations = 512;
-constexpr float kNnlsTolerance = 1.0e-6f;
+constexpr unsigned kNnlsIterations = AVS_NNLS_ITERATIONS;
 
 static_assert(AVS_W_ROWS == AVS_NUM_BINS, "Dictionary row count mismatch");
 static_assert(AVS_W_COLS == AVS_NUM_COMPONENTS, "Dictionary column count mismatch");
@@ -80,7 +79,7 @@ void process_frame() {
     }
     const avs_status_t status = avs_solve_nnls(
         g_spectrum.log_magnitude, AVS_W_STANDARD, &g_nnls, g_activation,
-        kNnlsIterations, kNnlsTolerance);
+        kNnlsIterations);
     if (status != AVS_OK) {
         ESP_LOGW(kTag, "NNLS frame skipped (status=%d)", static_cast<int>(status));
         return;

@@ -78,10 +78,49 @@ at the main `AcousticVirtualSensor` folder. By default it profiles the actual
 python .\esp32_s3_n16r8\arduino_serial_demo\hardware_benchmark.py --port COM4
 ```
 
+The firmware must be uploaded to the ESP32-S3 before running this command.
+Open `esp32_s3_n16r8\arduino_serial_demo\AVS_ESP32S3_Demo\AVS_ESP32S3_Demo.ino`
+in Arduino IDE, select **ESP32S3 Dev Module** and the board's COM port, then
+upload. Close Serial Monitor before starting the Python script. Install the
+host-side packages once from the project root with:
+
+```powershell
+python -m pip install -r .\esp32_s3_n16r8\arduino_serial_demo\requirements.txt
+```
+
+If the sketch cannot find `w_standard_data.h`, generate it once from the project
+root:
+
+```powershell
+python .\esp32_s3_n16r8\tools\export_dictionary.py --input .\models\nmf\W_standard.npy --output .\esp32_s3_n16r8\arduino_serial_demo\AVS_ESP32S3_Demo\w_standard_data.h
+```
+
+Replace `COM4` with the port shown for the board in Windows Device Manager.
+The Python tool prints the raw ESP32 records and then a stage summary table.
+Use `BENCH_STAGE`/the table to compare individual stage averages and P95 values;
+use `BENCH_TOTAL_FRAME` for per-frame compute time and `BENCH_REALTIME` for the
+capacity verdict. `wall_capacity_x` also includes host-to-board serial transfer,
+so it is not the MCU-only processing capacity.
+
 The laptop extracts this WAV range, streams its real float32 samples to the MCU,
-and the MCU measures preprocessing, FFT/spectrum, NNLS, H_event sum,
-rolling-envelope update, and peak detection on those samples. Every stage
-reports min/median/average/P95/max time and CPU cycles. Memory lines report
+and the MCU measures the frame-input copy, preprocessing, windowing, FFT,
+spectrum conversion, NNLS, H_event sum, rolling-envelope update, and peak
+detection on those samples.
+Every stage reports min/median/average/P95/max time and CPU cycles. The frame
+input stage measures copying the assembled frame into a working buffer; UART
+transfer/wait time is excluded. The current firmware has no envelope smoothing,
+so `smoothing=NOT_IMPLEMENTED` is reported instead of a misleading timing.
+NNLS now uses fixed-iteration FISTA with float32 and the initialization-time
+Gram matrix. `BENCH_CONFIG` reports its iteration count, step size, and
+Lipschitz bound; `BENCH_NNLS_DIAGNOSTICS` reports the relative projected
+gradient after the configured iterations. `BENCH_EVENT_SCORE` reports the
+resulting event-score range. Compare the `nnls` stage time with the earlier
+active-set benchmark on the same WAV segment, and use the projected-gradient
+and event-score diagnostics when judging the speed/accuracy trade-off.
+`BENCH_CHIP` and `BENCH_CONFIG` report the measured core, CPU frequency,
+compiler optimization status, and whether serial logging, transport, or dynamic
+allocation is inside timed regions. Serial output happens after measurements.
+Memory lines report
 internal RAM, PSRAM, executable IRAM, and stack watermarks before/after each
 stage, including stage-local minimum free heap and peak extra allocation. Flash
 code size and remaining app partition are reported once globally because flash

@@ -15,16 +15,23 @@
 namespace {
 constexpr size_t kWindowFrames = 3u * AVS_SAMPLE_RATE / AVS_HOP_LENGTH;
 constexpr size_t kMaxBlockSamples = 512;
-constexpr unsigned kNnlsIterations = 512;
-constexpr float kNnlsTolerance = 1.0e-6f;
+constexpr unsigned kNnlsIterations = AVS_NNLS_ITERATIONS;
 constexpr size_t kMaxBenchFrames = 256;
 constexpr size_t kBenchWarmupFrames = 8;
 constexpr double kTwoPi = 6.2831853071795864769;
-constexpr size_t kStageCount = 6;
+constexpr size_t kStageCount = 9;
+#if defined(__OPTIMIZE__)
+constexpr const char *kOptimizationStatus = "ON";
+#else
+constexpr const char *kOptimizationStatus = "OFF";
+#endif
 
 enum bench_stage_t : size_t {
-    kStagePreprocess = 0,
+    kStageFrameInput = 0,
+    kStagePreprocess,
+    kStageWindowing,
     kStageFft,
+    kStageSpectrum,
     kStageNnls,
     kStageEventSum,
     kStageEnvelopeUpdate,
@@ -75,8 +82,8 @@ struct stage_measurement_t {
 };
 
 constexpr const char *kStageNames[kStageCount] = {
-    "preprocess", "fft_spectrum", "nnls", "event_sum",
-    "envelope_update", "peak_detection_3s"
+    "frame_input_copy", "preprocess", "windowing", "fft", "spectrum",
+    "nnls", "event_sum", "envelope_update", "peak_detection_3s"
 };
 
 static_assert(AVS_W_ROWS == AVS_NUM_BINS, "Dictionary row count mismatch");
@@ -87,10 +94,13 @@ avs_spectrum_t g_spectrum{};
 avs_nnls_workspace_t g_nnls{};
 float g_window[AVS_N_FFT]{};
 float g_frame[AVS_N_FFT]{};
+float g_frame_work[AVS_N_FFT]{};
 float g_activation[AVS_NUM_COMPONENTS]{};
 float g_envelope[kWindowFrames]{};
 uint32_t g_bench_latency_us[kMaxBenchFrames]{};
 uint32_t g_bench_latency_cycles[kMaxBenchFrames]{};
+float g_bench_nnls_projected_gradient[kMaxBenchFrames]{};
+float g_bench_event_score[kMaxBenchFrames]{};
 bench_stage_profile_t g_bench_stages[kStageCount]{};
 uint8_t g_rx_bytes[kMaxBlockSamples * sizeof(float)]{};
 size_t g_envelope_count = 0;
@@ -184,34 +194,56 @@ void end_stage_measurement(bench_stage_t stage, size_t sample_index,
             ? measurement.stack_hwm_before - stack_hwm_after : 0u);
 }
 
-avs_status_t run_dsp_frame(float *frame, float *event_sum, int profile_index = -1) {
+avs_status_t run_dsp_frame(const float *input_frame, float *event_sum,
+                           int profile_index = -1) {
     stage_measurement_t measurement{};
     if (profile_index >= 0) begin_stage_measurement(measurement);
-    float mean = 0.0f;
-    for (size_t i = 0; i < AVS_N_FFT; ++i) mean += frame[i];
-    mean /= AVS_N_FFT;
-    for (size_t i = 0; i < AVS_N_FFT; ++i) frame[i] -= mean;
+    memcpy(g_frame_work, input_frame, sizeof(g_frame_work));
     if (profile_index >= 0) {
-        end_stage_measurement(kStagePreprocess, (size_t)profile_index, measurement);
+        end_stage_measurement(kStageFrameInput, (size_t)profile_index, measurement);
         begin_stage_measurement(measurement);
     }
+    float mean = 0.0f;
+    for (size_t i = 0; i < AVS_N_FFT; ++i) mean += g_frame_work[i];
+    mean /= AVS_N_FFT;
+    for (size_t i = 0; i < AVS_N_FFT; ++i) g_frame_work[i] -= mean;
+    if (profile_index >= 0) {
+        end_stage_measurement(kStagePreprocess, (size_t)profile_index, measurement);
+    }
 
-    const avs_status_t fft_status = avs_compute_spectrum(frame, g_window, &g_fft, &g_spectrum);
+    if (profile_index >= 0) begin_stage_measurement(measurement);
+    const avs_status_t window_status =
+        avs_prepare_fft_input(g_frame_work, g_window, &g_fft);
+    if (profile_index >= 0) {
+        end_stage_measurement(kStageWindowing, (size_t)profile_index, measurement);
+    }
+    if (window_status != AVS_OK) return window_status;
+    if (profile_index >= 0) begin_stage_measurement(measurement);
+    const avs_status_t fft_status = avs_execute_fft(&g_fft);
     if (profile_index >= 0) {
         end_stage_measurement(kStageFft, (size_t)profile_index, measurement);
     }
     if (fft_status != AVS_OK) return fft_status;
     if (profile_index >= 0) begin_stage_measurement(measurement);
+    const avs_status_t spectrum_status = avs_compute_log_spectrum(&g_fft, &g_spectrum);
+    if (profile_index >= 0) {
+        end_stage_measurement(kStageSpectrum, (size_t)profile_index, measurement);
+    }
+    if (spectrum_status != AVS_OK) return spectrum_status;
+    if (profile_index >= 0) begin_stage_measurement(measurement);
     const avs_status_t nnls_status = avs_solve_nnls(
         g_spectrum.log_magnitude, AVS_W_STANDARD, &g_nnls, g_activation,
-        kNnlsIterations, kNnlsTolerance);
+        kNnlsIterations);
     if (profile_index >= 0) {
+        g_bench_nnls_projected_gradient[profile_index] =
+            g_nnls.last_relative_projected_gradient;
         end_stage_measurement(kStageNnls, (size_t)profile_index, measurement);
     }
     if (nnls_status != AVS_OK) return nnls_status;
     if (profile_index >= 0) begin_stage_measurement(measurement);
     *event_sum = avs_sum_event_activations(g_activation, AVS_NUM_COMPONENTS);
     if (profile_index >= 0) {
+        g_bench_event_score[profile_index] = *event_sum;
         end_stage_measurement(kStageEventSum, (size_t)profile_index, measurement);
     }
     return AVS_OK;
@@ -312,6 +344,9 @@ void fill_benchmark_frame(size_t frame_number) {
 void reset_benchmark_profiles() {
     memset(g_bench_latency_us, 0, sizeof(g_bench_latency_us));
     memset(g_bench_latency_cycles, 0, sizeof(g_bench_latency_cycles));
+    memset(g_bench_nnls_projected_gradient, 0,
+           sizeof(g_bench_nnls_projected_gradient));
+    memset(g_bench_event_score, 0, sizeof(g_bench_event_score));
     memset(g_bench_stages, 0, sizeof(g_bench_stages));
     g_profile_frame_count = 0;
     g_profile_peak_count = 0;
@@ -383,7 +418,7 @@ void summarize_stage(bench_stage_t stage, size_t sample_count) {
 void record_total_frame(size_t sample_index) {
     uint32_t frame_us = 0;
     uint32_t frame_cycles = 0;
-    for (size_t stage = kStagePreprocess; stage <= kStageEnvelopeUpdate; ++stage) {
+    for (size_t stage = kStageFrameInput; stage <= kStageEnvelopeUpdate; ++stage) {
         frame_us += g_bench_stages[stage].elapsed_us[sample_index];
         frame_cycles += g_bench_stages[stage].cycles[sample_index];
     }
@@ -417,6 +452,19 @@ void print_benchmark_results(size_t frame_count, size_t peak_count,
     const double peak_average_us = peak_count ? (double)peak_sum_us / peak_count : 0.0;
     const double compute_per_audio_second_us = average_frame_us * frame_rate + peak_average_us;
     const double real_time_capacity = 1000000.0 / compute_per_audio_second_us;
+    double projected_gradient_sum = 0.0;
+    double projected_gradient_max = 0.0;
+    double event_score_sum = 0.0;
+    float event_score_min = INFINITY;
+    float event_score_max = -INFINITY;
+    for (size_t i = 0; i < frame_count; ++i) {
+        projected_gradient_sum += g_bench_nnls_projected_gradient[i];
+        projected_gradient_max = std::max(projected_gradient_max,
+            (double)g_bench_nnls_projected_gradient[i]);
+        event_score_sum += g_bench_event_score[i];
+        event_score_min = std::min(event_score_min, g_bench_event_score[i]);
+        event_score_max = std::max(event_score_max, g_bench_event_score[i]);
+    }
 
     const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const uint32_t psram_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
@@ -424,6 +472,10 @@ void print_benchmark_results(size_t frame_count, size_t peak_count,
     Serial.printf("BENCH_CHIP model=%s revision=%u cores=%u cpu_mhz=%u measured_core=%u\r\n",
         ESP.getChipModel(), (unsigned)ESP.getChipRevision(), (unsigned)ESP.getChipCores(),
         (unsigned)ESP.getCpuFreqMHz(), (unsigned)xPortGetCoreID());
+    Serial.printf("BENCH_CONFIG optimization=%s nnls_algorithm=FISTA nnls_precision=float32 nnls_iterations=%u nnls_step_size=%.9g nnls_lipschitz_bound=%.9g serial_logging_in_timed_region=NO serial_transport_in_timed_region=NO allocation_in_timed_region=NO smoothing=NOT_IMPLEMENTED\r\n",
+        kOptimizationStatus, kNnlsIterations, (double)g_nnls.step_size,
+        (double)g_nnls.lipschitz_bound
+    );
     Serial.printf("BENCH_FRAME fft_samples=%u hop_samples=%u sample_rate=%u deadline_us=%.2f measured_frames=%u warmup_frames=%u input_kind=%s\r\n",
         (unsigned)AVS_N_FFT, (unsigned)AVS_HOP_LENGTH, (unsigned)AVS_SAMPLE_RATE,
         deadline_us, (unsigned)frame_count, (unsigned)warmup_frames, input_kind);
@@ -434,6 +486,12 @@ void print_benchmark_results(size_t frame_count, size_t peak_count,
     Serial.printf("BENCH_REALTIME frame_rate_hz=%.3f peak_runs_measured=%u peak_average_us=%.2f total_compute_us_per_audio_second=%.2f capacity_x=%.3f meets_realtime=%s\r\n",
         frame_rate, (unsigned)peak_count, peak_average_us, compute_per_audio_second_us,
         real_time_capacity, real_time_capacity >= 1.0 ? "YES" : "NO");
+    Serial.printf("BENCH_NNLS_DIAGNOSTICS samples=%u avg_iterations=%u max_iterations=%u avg_relative_projected_gradient=%.9g max_relative_projected_gradient=%.9g\r\n",
+        (unsigned)frame_count, (unsigned)kNnlsIterations, (unsigned)kNnlsIterations,
+        projected_gradient_sum / frame_count, projected_gradient_max);
+    Serial.printf("BENCH_EVENT_SCORE samples=%u min=%.9g average=%.9g max=%.9g\r\n",
+        (unsigned)frame_count, (double)event_score_min,
+        event_score_sum / frame_count, (double)event_score_max);
 
     for (size_t stage = 0; stage < kStageCount; ++stage) {
         const size_t stage_samples = stage == kStagePeakDetection ? peak_count : frame_count;

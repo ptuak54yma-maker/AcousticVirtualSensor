@@ -1,0 +1,26 @@
+=== FISTA ESP32 vs Python active-set, same per-frame preprocessing ===
+frames=859
+FFT/log-spectrum: MAE=8.75655473e-07; RMSE=2.24176142e-06; max_abs=6.089409e-05
+NNLS H (all 48 components): MAE=0.000279860105; RMSE=0.000925282773; max_abs=0.0249685049
+H_event_sum (24 event components): MAE=5.04164927e-06; max_abs=0.000104060397; H_sum_vs_direct_score_max_abs=0
+peak counts: ESP32=41, Python=41; matching frame indices=41/41
+
+=== ESP32 timing records ===
+BENCH_CHIP model=ESP32-S3 revision=2 cores=2 cpu_mhz=240 measured_core=1
+BENCH_CONFIG algorithm=FISTA normalized_columns=YES precision=float32 iterations=256 step_size=0.0443519838 lipschitz_bound=22.5469055 optimization=ON serial_logging_in_timed_region=NO allocation_in_timed_region=NO
+BENCH_FRAME samples=880702 frames=859 sample_rate=44100 hop=1024 deadline_us=23219.95
+BENCH_TOTAL_FRAME average_us=78564.21 p95_us=78809 average_cycles=18855456
+BENCH_REALTIME capacity_x=0.2955 meets_realtime=NO
+BENCH_STAGE name=frame_input_copy samples=859 average_us=22.51 p95_us=23 max_us=27 average_cycles=5403
+BENCH_STAGE name=preprocess samples=859 average_us=95.18 p95_us=99 max_us=100 average_cycles=22853
+BENCH_STAGE name=windowing samples=859 average_us=103.91 p95_us=108 max_us=111 average_cycles=24939
+BENCH_STAGE name=fft samples=859 average_us=1875.15 p95_us=1877 max_us=1882 average_cycles=450051
+BENCH_STAGE name=spectrum samples=859 average_us=1226.37 p95_us=1471 max_us=1509 average_cycles=294332
+BENCH_STAGE name=nnls samples=859 average_us=75238.27 p95_us=75242 max_us=75243 average_cycles=18057190
+BENCH_STAGE name=event_sum samples=859 average_us=1.34 p95_us=2 max_us=6 average_cycles=323
+BENCH_STAGE name=envelope_write samples=859 average_us=1.47 p95_us=2 max_us=2 average_cycles=364
+BENCH_STAGE name=peak_detection_full_file samples=1 average_us=2226.00 p95_us=2226 max_us=2226 average_cycles=534235
+BENCH_NNLS_DIAGNOSTICS samples=859 avg_relative_projected_gradient=0.000175173317 max_relative_projected_gradient=0.000623253407
+BENCH_EVENT_SCORE min=0.000319712795 average=0.00531990071 max=0.0360075459
+RESULT duration_s=19.970567 peak_count=41 peak_frames=72,81,89,99,107,114,119,140,160,168,188,208,220,233,263,271,286,295,336,345,366,377,388,403,412,441,461,471,483,496,515,528,544,550,565,573,580,612,631,657,664
+FISTA_DATA_BEGIN frames=859 bins=1025 components=48 format=float32le spectrum_bytes=3521900 activation_bytes=164928

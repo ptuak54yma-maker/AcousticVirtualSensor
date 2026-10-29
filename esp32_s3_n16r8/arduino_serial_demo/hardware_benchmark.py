@@ -18,7 +18,8 @@ FFT_LENGTH = 2048
 HOP_LENGTH = 1024
 
 
-def read_response(port: serial.Serial, timeout_seconds: float, expected_prefix: str) -> str:
+def read_response(port: serial.Serial, timeout_seconds: float, expected_prefix: str,
+                  benchmark_lines: list[str] | None = None) -> str:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         raw = port.readline()
@@ -28,6 +29,8 @@ def read_response(port: serial.Serial, timeout_seconds: float, expected_prefix: 
         if not line:
             continue
         print(f"ESP32: {line}")
+        if benchmark_lines is not None and line.startswith("BENCH_"):
+            benchmark_lines.append(line)
         if line.startswith("ERROR") or line.startswith("BENCH_ERROR"):
             raise RuntimeError(line)
         if line.startswith(expected_prefix):
@@ -99,14 +102,84 @@ def load_wav_segment(wav_path: Path, start_sec: float, duration_sec: float) -> n
     return segment
 
 
+def parse_fields(line: str) -> dict[str, str]:
+    fields: dict[str, str] = {}
+    for token in line.split()[1:]:
+        if "=" in token:
+            key, value = token.split("=", 1)
+            fields[key] = value
+    return fields
+
+
+def print_benchmark_summary(lines: list[str]) -> None:
+    records = [(line.split()[0], parse_fields(line)) for line in lines]
+    by_name = {name: fields for name, fields in records}
+    chip = by_name.get("BENCH_CHIP", {})
+    config = by_name.get("BENCH_CONFIG", {})
+    frame = by_name.get("BENCH_FRAME", {})
+    total = by_name.get("BENCH_TOTAL_FRAME", {})
+    realtime = by_name.get("BENCH_REALTIME", {})
+    nnls = by_name.get("BENCH_NNLS_DIAGNOSTICS", {})
+    event_score = by_name.get("BENCH_EVENT_SCORE", {})
+    stages = [fields for name, fields in records if name == "BENCH_STAGE"]
+
+    print("\n=== MCU benchmark summary ===")
+    print(
+        f"Chip: {chip.get('model', 'unknown')} | CPU: {chip.get('cpu_mhz', '?')} MHz | "
+        f"core: {chip.get('measured_core', '?')} | cores: {chip.get('cores', '?')}"
+    )
+    print(
+        f"Compiler optimization: {config.get('optimization', '?')} | "
+        f"NNLS: {config.get('nnls_algorithm', '?')} {config.get('nnls_precision', '?')}, "
+        f"{config.get('nnls_iterations', '?')} iterations | "
+        f"deadline: {frame.get('deadline_us', '?')} us | "
+        f"input: {frame.get('input_kind', '?')}"
+    )
+    print(
+        f"Total/frame: avg {total.get('average_us', '?')} us, "
+        f"P95 {total.get('p95_us', '?')} us | "
+        f"realtime: {realtime.get('meets_realtime', '?')} "
+        f"(capacity {realtime.get('capacity_x', '?')}x)"
+    )
+    print("\nStage                         avg us      P95 us      max us    avg cycles")
+    for stage in stages:
+        print(
+            f"{stage.get('name', '?'):<28} "
+            f"{stage.get('average_us', '?'):>9} "
+            f"{stage.get('p95_us', '?'):>11} "
+            f"{stage.get('max_us', '?'):>11} "
+            f"{stage.get('average_cycles', '?'):>13}"
+        )
+    if nnls:
+        print(
+            "\nNNLS relative projected-gradient: "
+            f"avg {nnls.get('avg_relative_projected_gradient', '?')}, "
+            f"max {nnls.get('max_relative_projected_gradient', '?')}"
+        )
+    if event_score:
+        print(
+            "Event score: "
+            f"min {event_score.get('min', '?')}, "
+            f"avg {event_score.get('average', '?')}, "
+            f"max {event_score.get('max', '?')}"
+        )
+    print(
+        "\nInput copy excludes UART transfer/wait. Peak detection is measured "
+        "separately from per-frame DSP."
+    )
+
+
 def run_synthetic(port: serial.Serial, frames: int) -> None:
+    benchmark_lines: list[str] = []
     port.write(f"BENCH {frames}\n".encode("ascii"))
     port.flush()
-    read_response(port, 120.0, "BENCH_DONE")
+    read_response(port, 120.0, "BENCH_DONE", benchmark_lines)
+    print_benchmark_summary(benchmark_lines)
 
 
 def run_wav_segment(port: serial.Serial, segment: np.ndarray,
                     wav_path: Path, start_sec: float) -> None:
+    benchmark_lines: list[str] = []
     sample_count = len(segment)
     duration_sec = sample_count / SAMPLE_RATE
     print(f"WAV: {wav_path}")
@@ -133,7 +206,8 @@ def run_wav_segment(port: serial.Serial, segment: np.ndarray,
 
     port.write(b"END\n")
     port.flush()
-    read_response(port, 180.0, "BENCH_DONE")
+    read_response(port, 180.0, "BENCH_DONE", benchmark_lines)
+    print_benchmark_summary(benchmark_lines)
     elapsed = time.monotonic() - transfer_started
     print(f"WAV_SERIAL_RUN audio_s={duration_sec:.3f} wall_s={elapsed:.2f} "
           f"wall_capacity_x={duration_sec / elapsed:.3f}")
