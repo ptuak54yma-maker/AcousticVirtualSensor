@@ -208,3 +208,39 @@ frame/peak annotations. The legacy MCU NNLS profile uses fixed-sweep
 coordinate descent, while Python's exact reference uses SciPy NNLS. Timing
 separates computation from serial telemetry; the latter is excluded from the
 per-profile compute latency.
+
+## Separate profile sketches (lighter runs)
+
+For experiments that should run one model at a time, generate 14 profile
+sketches. Each sketch runs one solver/configuration over all 18 selected train
+WAVs and all 4 test WAVs; auxiliary `phoi_`, `noisebowl_`, and `noiseevir_`
+recordings remain excluded. Train is used to tune peak settings and test is
+measured with those settings. Results are saved in a folder named after the
+profile, so each case has independent CSVs and a chart.
+
+From the project root, generate the model header and the separate sketches:
+
+```powershell
+python .\esp32_s3_n16r8\tools\export_arduino_experiment_models.py
+python .\esp32_s3_n16r8\arduino_experiments\generate_profile_sketches.py
+```
+
+Open one matching sketch folder and `.ino` in Arduino IDE. For example, to run
+Mel64 FISTA with 8 iterations, open
+`AVS_ESP32S3_Profile_Sketches\m64_fista8\m64_fista8.ino`, select the ESP32-S3
+board and COM4, set **PSRAM = OPI PSRAM** and **Partition Scheme = Huge APP**,
+then upload. Close Serial Monitor and run:
+
+```powershell
+python .\esp32_s3_n16r8\arduino_experiments\AVS_ESP32S3_Experiment_Viewer\run_dataset_experiments.py --port COM4 --split all --profile m64_fista8
+```
+
+For another case, upload the matching sketch and replace `m64_fista8` in the
+command with its profile name. Available names are `legacy_nnls`, `m64_nnls`,
+`m128_nnls`, `m64_fista8`, `m64_fista16`, `m64_fista32`, `m64_fista64`,
+`m64_fista128`, `m64_fista256`, `m64_fista512`, `m64_fista1024`,
+`m64_fista2048`, `m64_fista4096`, and `m128_fista512`. This is one upload and
+one full-dataset run per case. Results for each case go to
+`outputs\arduino_profile_experiments\<profile>\`; inspect
+`dataset_comparison.png`, `count_metrics.csv`, `python_cpp_count_summary.csv`,
+`timing_summary.csv`, and the parity CSVs there.

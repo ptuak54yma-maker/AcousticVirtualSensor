@@ -18,9 +18,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 BLOCK = 512
 EXCLUDED_STEM_PREFIXES = ("phoi_", "noisebowl_", "noiseevir_")
-PROFILES = ["legacy_nnls", "m64_nnls", "m128_nnls"] + [
+ALL_PROFILES = ["legacy_nnls", "m64_nnls", "m128_nnls"] + [
     f"m64_fista{n}" for n in (8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096)
 ] + ["m128_fista512"]
+PROFILES = ALL_PROFILES.copy()
 
 
 def read_audio(path: Path) -> np.ndarray:
@@ -142,10 +143,16 @@ def main() -> None:
     parser.add_argument("--port", default="COM4")
     parser.add_argument("--baud", type=int, default=2_000_000)
     parser.add_argument("--split", choices=("all", "train", "test"), default="all")
-    parser.add_argument("--output", type=Path, default=ROOT / "outputs" / "arduino_dataset_experiments")
+    parser.add_argument("--profile", choices=ALL_PROFILES, help="run only the selected profile sketch")
+    parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--max-files", type=int, default=0, help="debug only; zero means every WAV in the selected split")
     parser.add_argument("--max-seconds", type=float, default=0, help="debug only; truncate each file and suppress label metrics")
     args = parser.parse_args()
+    if args.profile:
+        PROFILES[:] = [args.profile]
+    if args.output is None:
+        args.output = (ROOT / "outputs" / "arduino_profile_experiments" / args.profile
+                       if args.profile else ROOT / "outputs" / "arduino_dataset_experiments")
 
     train_labels = load_labels(ROOT / "data" / "train" / "label.txt")
     test_labels = load_labels(ROOT / "data" / "test" / "label.txt")
@@ -204,7 +211,9 @@ def main() -> None:
                 if time.monotonic() > deadline:
                     raise TimeoutError("ESP32 did not announce AVS_DATASET_READY on COM port.")
                 msg = read_line(port, 5)
-                if msg == "PONG" or msg.startswith("AVS_DATASET_READY"):
+                if msg.startswith("PONG") or msg.startswith("AVS_DATASET_READY"):
+                    if args.profile and f"profile={args.profile}" not in msg:
+                        raise RuntimeError(f"Wrong ESP32 sketch for --profile {args.profile}: {msg}")
                     board_ready=True
                 elif msg.startswith("MEM,"):
                     memory_rows.append(parse_key_values(msg.split(",")[1:]))
@@ -258,7 +267,7 @@ def main() -> None:
                     ack = read_line(port)
                     if ack.startswith("MEM,"):
                         memory_rows.append(parse_key_values(ack.split(",")[1:])); continue
-                    if ack=="PONG":continue
+                    if ack.startswith("PONG"):continue
                     if not ack.startswith(f"FILE_ACK,{slug},"):
                         raise RuntimeError(f"ESP32 rejected file header: {ack}")
                     break
@@ -339,9 +348,12 @@ def main() -> None:
                 actual_frames=int(file_done[2]); expected_frames=0 if audio.size<2048 else 1+(audio.size-2048)//1024
                 if actual_frames!=expected_frames or len(frames_seen)!=expected_frames:
                     raise RuntimeError(f"Frame loss/mismatch for {wav_path.name}: MCU={actual_frames}, received={len(frames_seen)}, expected={expected_frames}")
-                unique_solver_profiles=("legacy_nnls","m64_nnls","m128_nnls","m64_fista4096","m128_fista512")
                 for frame_i,profile_times in frame_solver_us.items():
-                    solver_us=sum(profile_times.get(name,0) for name in unique_solver_profiles)
+                    if len(PROFILES)==1:
+                        solver_us=sum(profile_times.values())
+                    else:
+                        unique_solver_profiles=("legacy_nnls","m64_nnls","m128_nnls","m64_fista4096","m128_fista512")
+                        solver_us=sum(profile_times.get(name,0) for name in unique_solver_profiles)
                     sweep_timing_bank.setdefault(metric_split,[]).append(frame_front_us[frame_i]+solver_us)
                 file_stats.append({"split":metric_split,"file":wav_path.name,"truth":truth,"samples":audio.size,"frames":actual_frames})
                 for profile in PROFILES:envelope_bank[(slug,profile)]=file_envelopes[profile]
@@ -365,20 +377,26 @@ def main() -> None:
                     np.savez_compressed(args.output / f"{slug}_cpp_features.npz",mel64=np.asarray(cpp64,dtype=np.float32).T,mel128=np.asarray(cpp128,dtype=np.float32).T,
                                         mel64_python=py_values[0],mel128_python=py_values[1])
                     cpp_arrays={name:np.asarray(values,dtype=np.float32).T for name,values in cpp_h.items()}
-                    mag=frontend.stft_magnitude(audio)
-                    py_old=scipy_nnls_matrix(old_w,np.log1p(mag).astype(np.float32))
-                    py64_nnls=scipy_nnls_matrix(np.asarray(m64["W"],dtype=np.float32),py_values[0])
-                    py128_nnls=scipy_nnls_matrix(np.asarray(m128["W"],dtype=np.float32),py_values[1])
-                    refs={"legacy_nnls":py_old,"m64_nnls":py64_nnls,"m128_nnls":py128_nnls}
+                    refs={}
+                    if "legacy_nnls" in PROFILES:
+                        mag=frontend.stft_magnitude(audio)
+                        refs["legacy_nnls"]=scipy_nnls_matrix(old_w,np.log1p(mag).astype(np.float32))
+                    if "m64_nnls" in PROFILES:
+                        refs["m64_nnls"]=scipy_nnls_matrix(np.asarray(m64["W"],dtype=np.float32),py_values[0])
+                    if "m128_nnls" in PROFILES:
+                        refs["m128_nnls"]=scipy_nnls_matrix(np.asarray(m128["W"],dtype=np.float32),py_values[1])
                     for steps in (8,16,32,64,128,256,512,1024,2048,4096):
+                        profile=f"m64_fista{steps}"
+                        if profile not in PROFILES:continue
                         archive=ROOT/"experiments"/"pipeline_k48_mel"/"results"/f"activations_fista_{steps}.npz"
                         py_h=None
                         if archive.exists():
                             with np.load(archive,allow_pickle=False) as saved:
                                 if wav_path.name in saved.files:py_h=np.asarray(saved[wav_path.name],dtype=np.float32)
                         if py_h is None:py_h=fista_python(np.asarray(m64["W"],dtype=np.float32),py_values[0],steps)
-                        refs[f"m64_fista{steps}"]=py_h
-                    refs["m128_fista512"]=fista_python(np.asarray(m128["W"],dtype=np.float32),py_values[1],512)
+                        refs[profile]=py_h
+                    if "m128_fista512" in PROFILES:
+                        refs["m128_fista512"]=fista_python(np.asarray(m128["W"],dtype=np.float32),py_values[1],512)
                     for profile,py_h in refs.items():
                         parity=h_metrics(cpp_arrays[profile],py_h)
                         python_h_errors.append({"split":metric_split,"file":wav_path.name,"profile":profile,**parity})

@@ -47,3 +47,5 @@ experiments/pipeline_k48_mel/results/activations_fista_*.npz
 esp32_s3_n16r8/arduino_experiments/AVS_ESP32S3_Experiment_Viewer/experiment_models.h
 outputs/arduino_experiment_viewer/
 outputs/arduino_dataset_experiments/
+esp32_s3_n16r8/arduino_experiments/AVS_ESP32S3_Profile_Sketches/
+outputs/arduino_profile_experiments/

@@ -8,13 +8,18 @@
 #include <freertos/task.h>
 #include "experiment_models.h"
 
+#ifndef AVS_PROFILE_ID
+#define AVS_PROFILE_ID -1
+#endif
+
 namespace {
 constexpr size_t NFFT=2048, HOP=1024, NBINS=1025, K=48, BLOCK=512;
 constexpr float PI_F=3.14159265358979323846f;
 constexpr uint16_t STEPS[]={8,16,32,64,128,256,512,1024,2048,4096};
 constexpr size_t N_STEPS=sizeof(STEPS)/sizeof(STEPS[0]);
-constexpr size_t N_PROFILES=3+N_STEPS+1;
-const char *PROFILE_NAMES[N_PROFILES]={"legacy_nnls","m64_nnls","m128_nnls","m64_fista8","m64_fista16","m64_fista32","m64_fista64","m64_fista128","m64_fista256","m64_fista512","m64_fista1024","m64_fista2048","m64_fista4096","m128_fista512"};
+constexpr size_t ALL_PROFILES=3+N_STEPS+1;
+constexpr size_t N_PROFILES=AVS_PROFILE_ID<0?ALL_PROFILES:1;
+const char *PROFILE_NAMES[ALL_PROFILES]={"legacy_nnls","m64_nnls","m128_nnls","m64_fista8","m64_fista16","m64_fista32","m64_fista64","m64_fista128","m64_fista256","m64_fista512","m64_fista1024","m64_fista2048","m64_fista4096","m128_fista512"};
 struct ProfileResult { char name[24]; float h[K]; float event; uint32_t solver_us; };
 struct PeakCandidate { uint32_t index; float height; float prominence; };
 
@@ -23,7 +28,7 @@ float magnitude[NBINS], oldFeatures[NBINS], mel64[64], mel128[128];
 float gramOld[K*K], gram64[K*K], gram128[K*K];
 float rhs[K], cdH[K], fistaX[K], fistaY[K], fistaNext[K];
 uint8_t rx[BLOCK*sizeof(float)];
-ProfileResult outputs[3+N_STEPS+1];
+ProfileResult outputs[N_PROFILES];
 float *eventScores=nullptr; size_t scoreCapacity=0;
 float peakProminence[N_PROFILES]{}; uint16_t peakDistance[N_PROFILES]{}; bool peakConfigured[N_PROFILES]{};
 size_t frameFill=0, frameCount=0;
@@ -85,13 +90,16 @@ void solveFista64(const uint32_t frontUs){
   float lipschitz=0;for(size_t i=0;i<K;i++){float row=0;for(size_t j=0;j<K;j++)row+=gram64[i*K+j];lipschitz=fmaxf(lipschitz,row);}
   if(!(lipschitz>0))return;
   float t=1;size_t target=0;
-  for(uint32_t iter=1;iter<=STEPS[N_STEPS-1];iter++){
+  const uint32_t maxIterations=AVS_PROFILE_ID>=3&&AVS_PROFILE_ID<3+(int)N_STEPS?STEPS[AVS_PROFILE_ID-3]:STEPS[N_STEPS-1];
+  for(uint32_t iter=1;iter<=maxIterations;iter++){
     float tn=.5f*(1+sqrtf(1+4*t*t));
     for(size_t j=0;j<K;j++){float gy=0;for(size_t k=0;k<K;k++)gy+=gram64[j*K+k]*fistaY[k];fistaNext[j]=fmaxf(0,fistaY[j]-(gy-rhs[j])/lipschitz);}
     for(size_t j=0;j<K;j++)fistaY[j]=fistaNext[j]+((t-1)/tn)*(fistaNext[j]-fistaX[j]);
     memcpy(fistaX,fistaNext,sizeof(fistaX));t=tn;
-    if(target<N_STEPS&&iter==STEPS[target]){char name[24];snprintf(name,sizeof(name),"m64_fista%u",(unsigned)iter);
-      saveActivation(name,fistaX,(uint32_t)esp_timer_get_time()-start);target++;}
+    if(AVS_PROFILE_ID<0){if(target<N_STEPS&&iter==STEPS[target]){char name[24];snprintf(name,sizeof(name),"m64_fista%u",(unsigned)iter);
+        saveActivation(name,fistaX,(uint32_t)esp_timer_get_time()-start);target++;}}
+    else if(iter==maxIterations){char name[24];snprintf(name,sizeof(name),"m64_fista%u",(unsigned)iter);
+      saveActivation(name,fistaX,(uint32_t)esp_timer_get_time()-start);}
   }
   currentComputeUs+=(uint32_t)esp_timer_get_time()-start;
 }
@@ -109,10 +117,11 @@ void solveFista128(const uint32_t frontUs){
 void processFrame(){
   const uint32_t frameStart=(uint32_t)esp_timer_get_time();makeFeatures();const uint32_t frontUs=(uint32_t)esp_timer_get_time()-frameStart;
   totalFrontendUs+=frontUs;outputCount=0;currentComputeUs=frontUs;
-  solveCd(AVS_OLD_W,oldFeatures,NBINS,gramOld,"legacy_nnls",frontUs);
-  solveCd(AVS_MEL64_W,mel64,64,gram64,"m64_nnls",frontUs);
-  solveCd(AVS_MEL128_W,mel128,128,gram128,"m128_nnls",frontUs);
-  solveFista64(frontUs);solveFista128(frontUs);
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==0)solveCd(AVS_OLD_W,oldFeatures,NBINS,gramOld,"legacy_nnls",frontUs);
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==1)solveCd(AVS_MEL64_W,mel64,64,gram64,"m64_nnls",frontUs);
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==2)solveCd(AVS_MEL128_W,mel128,128,gram128,"m128_nnls",frontUs);
+  if(AVS_PROFILE_ID<0||(AVS_PROFILE_ID>=3&&AVS_PROFILE_ID<3+(int)N_STEPS))solveFista64(frontUs);
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==13)solveFista128(frontUs);
   minFrameTotalUs=min(minFrameTotalUs,currentComputeUs);maxFrameTotalUs=max(maxFrameTotalUs,currentComputeUs);
   if(eventScores&&frameCount<scoreCapacity)for(size_t i=0;i<outputCount;i++)eventScores[frameCount*N_PROFILES+i]=outputs[i].event;
   const uint32_t outputStart=(uint32_t)esp_timer_get_time();
@@ -141,7 +150,9 @@ void printMemory(){
     (unsigned)freeHeap,(unsigned)minHeap,(unsigned)psramTotal,(unsigned)psramFree,(unsigned)sketch,(unsigned)sketchFree,(unsigned)stackWords);
 }
 void resetFile(){if(eventScores){free(eventScores);eventScores=nullptr;}scoreCapacity=0;frameFill=frameCount=0;samplesSeen=0;totalFrontendUs=0;minFrameTotalUs=UINT64_MAX;maxFrameTotalUs=0;minHeapAtStart=ESP.getFreeHeap();minPsramAtStart=ESP.getFreePsram();}
-int profileIndex(const char *name){for(size_t i=0;i<N_PROFILES;i++)if(strcmp(name,PROFILE_NAMES[i])==0)return (int)i;return -1;}
+int profileIndex(const char *name){if(AVS_PROFILE_ID>=0)return strcmp(name,PROFILE_NAMES[AVS_PROFILE_ID])==0?0:-1;
+  for(size_t i=0;i<N_PROFILES;i++)if(strcmp(name,PROFILE_NAMES[i])==0)return (int)i;return -1;}
+const char *configuredProfile(){return AVS_PROFILE_ID>=0?PROFILE_NAMES[AVS_PROFILE_ID]:"all";}
 size_t detectPeaks(const float *env,size_t length,float prominence,uint16_t distance,uint32_t *picked){
   if(length<3||!env)return 0;
   PeakCandidate *candidates=(PeakCandidate*)heap_caps_malloc(length*sizeof(PeakCandidate),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
@@ -176,7 +187,8 @@ void printPeakResults(){
     if(!profileEnv)profileEnv=(float*)malloc(scoreCapacity*sizeof(float));if(!profileEnv)continue;
     for(size_t f=0;f<frameCount;f++)profileEnv[f]=eventScores[f*N_PROFILES+p];
     const size_t n=detectPeaks(profileEnv,frameCount,peakProminence[p],peakDistance[p],picked);
-    Serial.printf("PEAK,%s,%s,%s,%.8g,%u,%u",dataSplit,fileId,PROFILE_NAMES[p],(double)peakProminence[p],(unsigned)peakDistance[p],(unsigned)n);
+    const char *name=AVS_PROFILE_ID>=0?PROFILE_NAMES[AVS_PROFILE_ID]:PROFILE_NAMES[p];
+    Serial.printf("PEAK,%s,%s,%s,%.8g,%u,%u",dataSplit,fileId,name,(double)peakProminence[p],(unsigned)peakDistance[p],(unsigned)n);
     for(size_t i=0;i<n;i++)Serial.printf(",%u",(unsigned)picked[i]);Serial.println();free(profileEnv);
   }
   free(picked);
@@ -193,7 +205,7 @@ void finishFile(){
 }
 
 void handleCommand(const String &cmd){
-  if(cmd=="PING"){Serial.println("PONG");return;}
+  if(cmd=="PING"){Serial.printf("PONG,profile=%s\n",configuredProfile());return;}
   if(cmd=="ABORT"){streamActive=false;expectedSamples=samplesSeen=0;resetFile();Serial.println("ABORT_ACK");return;}
   if(cmd.startsWith("THRESH ")){char name[32]="";float p=0;unsigned distance=1;
     if(sscanf(cmd.c_str()+7,"%31s %f %u",name,&p,&distance)!=3){Serial.println("ERROR,THRESH_HEADER");return;}
@@ -229,6 +241,7 @@ void setup(){
   Serial.begin(2000000);Serial.setTimeout(30000);
   for(size_t n=0;n<NFFT;n++)windowFn[n]=.5f-.5f*cosf(2*PI_F*(float)n/NFFT);
   buildGram(AVS_OLD_W,NBINS,gramOld);buildGram(AVS_MEL64_W,64,gram64);buildGram(AVS_MEL128_W,128,gram128);
-  ready=true;Serial.println("AVS_DATASET_READY,profiles=14,format=float32le,streaming=1");printMemory();
+  ready=true;
+  Serial.printf("AVS_DATASET_READY,profile=%s,profiles=%u,format=float32le,streaming=1\n",configuredProfile(),(unsigned)N_PROFILES);printMemory();
 }
 void loop(){if(ready&&Serial.available()){String cmd=Serial.readStringUntil('\n');cmd.trim();handleCommand(cmd);}}
