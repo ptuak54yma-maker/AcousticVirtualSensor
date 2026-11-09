@@ -42,6 +42,10 @@ activations, and binary Mel feature files usable by the C++ host evaluator.
 Count accuracy uses the project's metric:
 `max(0, 1 - abs(predicted - true) / true) * 100%`.
 
+See [`INFERENCE_EXPERIMENT_REPORT.md`](INFERENCE_EXPERIMENT_REPORT.md) for the
+configuration sweep, split policy, recorded metrics, and the distinction
+between Python solver emulation and unmeasured ESP32 firmware results.
+
 ## Firmware build
 
 The current sweep selected 512 FISTA iterations as the lowest count that
