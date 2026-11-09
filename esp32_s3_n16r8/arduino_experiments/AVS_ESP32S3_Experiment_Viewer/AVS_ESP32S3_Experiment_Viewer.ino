@@ -26,7 +26,7 @@ uint8_t rx[BLOCK*sizeof(float)];
 ProfileResult outputs[3+N_STEPS+1];
 float *eventScores=nullptr; size_t scoreCapacity=0;
 float peakProminence[N_PROFILES]{}; uint16_t peakDistance[N_PROFILES]{}; bool peakConfigured[N_PROFILES]{};
-size_t frameFill=0, hopFill=0, frameCount=0;
+size_t frameFill=0, frameCount=0;
 uint64_t expectedSamples=0, samplesSeen=0;
 float fileMean=0; bool streamActive=false, ready=false;
 char fileId[64]="-", dataSplit[24]="unknown"; int truthCount=-1;
@@ -128,8 +128,8 @@ void processFrame(){
 }
 
 void addSample(float sample){sample-=fileMean;
-  if(frameFill<NFFT){frame[frameFill++]=sample;if(frameFill==NFFT)processFrame();return;}
-  frame[HOP+hopFill++]=sample;if(hopFill==HOP){memmove(frame,frame+HOP,(NFFT-HOP)*sizeof(float));hopFill=0;processFrame();}
+  if(frameFill==NFFT){memmove(frame,frame+HOP,(NFFT-HOP)*sizeof(float));frameFill=HOP;}
+  frame[frameFill++]=sample;if(frameFill==NFFT)processFrame();
 }
 
 void printMemory(){
@@ -140,7 +140,7 @@ void printMemory(){
   Serial.printf("MEM,free_heap=%u,min_free_heap=%u,psram_total=%u,psram_free=%u,flash_app=%u,flash_free=%u,stack_watermark_words=%u\n",
     (unsigned)freeHeap,(unsigned)minHeap,(unsigned)psramTotal,(unsigned)psramFree,(unsigned)sketch,(unsigned)sketchFree,(unsigned)stackWords);
 }
-void resetFile(){if(eventScores){free(eventScores);eventScores=nullptr;}scoreCapacity=0;frameFill=hopFill=frameCount=0;samplesSeen=0;totalFrontendUs=0;minFrameTotalUs=UINT64_MAX;maxFrameTotalUs=0;minHeapAtStart=ESP.getFreeHeap();minPsramAtStart=ESP.getFreePsram();}
+void resetFile(){if(eventScores){free(eventScores);eventScores=nullptr;}scoreCapacity=0;frameFill=frameCount=0;samplesSeen=0;totalFrontendUs=0;minFrameTotalUs=UINT64_MAX;maxFrameTotalUs=0;minHeapAtStart=ESP.getFreeHeap();minPsramAtStart=ESP.getFreePsram();}
 int profileIndex(const char *name){for(size_t i=0;i<N_PROFILES;i++)if(strcmp(name,PROFILE_NAMES[i])==0)return (int)i;return -1;}
 size_t detectPeaks(const float *env,size_t length,float prominence,uint16_t distance,uint32_t *picked){
   if(length<3||!env)return 0;

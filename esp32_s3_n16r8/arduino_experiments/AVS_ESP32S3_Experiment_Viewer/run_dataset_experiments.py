@@ -351,26 +351,25 @@ def main() -> None:
                           "mae":float(np.mean(np.abs(diff))),"max_abs_error":float(np.max(np.abs(diff)))})
                     np.savez_compressed(args.output / f"{slug}_cpp_features.npz",mel64=np.asarray(cpp64,dtype=np.float32).T,mel128=np.asarray(cpp128,dtype=np.float32).T,
                                         mel64_python=py_values[0],mel128_python=py_values[1])
-                    if truth>=0:
-                        cpp_arrays={name:np.asarray(values,dtype=np.float32).T for name,values in cpp_h.items()}
-                        mag=frontend.stft_magnitude(audio)
-                        py_old=scipy_nnls_matrix(old_w,np.log1p(mag).astype(np.float32))
-                        py64_nnls=scipy_nnls_matrix(np.asarray(m64["W"],dtype=np.float32),py_values[0])
-                        py128_nnls=scipy_nnls_matrix(np.asarray(m128["W"],dtype=np.float32),py_values[1])
-                        refs={"legacy_nnls":py_old,"m64_nnls":py64_nnls,"m128_nnls":py128_nnls}
-                        for steps in (8,16,32,64,128,256,512,1024,2048,4096):
-                            archive=ROOT/"experiments"/"pipeline_k48_mel"/"results"/f"activations_fista_{steps}.npz"
-                            py_h=None
-                            if archive.exists():
-                                with np.load(archive,allow_pickle=False) as saved:
-                                    if wav_path.name in saved.files:py_h=np.asarray(saved[wav_path.name],dtype=np.float32)
-                            if py_h is None:py_h=fista_python(np.asarray(m64["W"],dtype=np.float32),py_values[0],steps)
-                            refs[f"m64_fista{steps}"]=py_h
-                        refs["m128_fista512"]=fista_python(np.asarray(m128["W"],dtype=np.float32),py_values[1],512)
-                        for profile,py_h in refs.items():
-                            parity=h_metrics(cpp_arrays[profile],py_h)
-                            python_h_errors.append({"split":metric_split,"file":wav_path.name,"profile":profile,**parity})
-                            python_env_bank[(slug,profile)]=np.sum(py_h[:24],axis=0,dtype=np.float32)
+                    cpp_arrays={name:np.asarray(values,dtype=np.float32).T for name,values in cpp_h.items()}
+                    mag=frontend.stft_magnitude(audio)
+                    py_old=scipy_nnls_matrix(old_w,np.log1p(mag).astype(np.float32))
+                    py64_nnls=scipy_nnls_matrix(np.asarray(m64["W"],dtype=np.float32),py_values[0])
+                    py128_nnls=scipy_nnls_matrix(np.asarray(m128["W"],dtype=np.float32),py_values[1])
+                    refs={"legacy_nnls":py_old,"m64_nnls":py64_nnls,"m128_nnls":py128_nnls}
+                    for steps in (8,16,32,64,128,256,512,1024,2048,4096):
+                        archive=ROOT/"experiments"/"pipeline_k48_mel"/"results"/f"activations_fista_{steps}.npz"
+                        py_h=None
+                        if archive.exists():
+                            with np.load(archive,allow_pickle=False) as saved:
+                                if wav_path.name in saved.files:py_h=np.asarray(saved[wav_path.name],dtype=np.float32)
+                        if py_h is None:py_h=fista_python(np.asarray(m64["W"],dtype=np.float32),py_values[0],steps)
+                        refs[f"m64_fista{steps}"]=py_h
+                    refs["m128_fista512"]=fista_python(np.asarray(m128["W"],dtype=np.float32),py_values[1],512)
+                    for profile,py_h in refs.items():
+                        parity=h_metrics(cpp_arrays[profile],py_h)
+                        python_h_errors.append({"split":metric_split,"file":wav_path.name,"profile":profile,**parity})
+                        python_env_bank[(slug,profile)]=np.sum(py_h[:24],axis=0,dtype=np.float32)
 
     # Tune p/d only on labeled training files; apply frozen settings to test.
     prediction_rows=[]; metric_rows=[]; python_count_rows=[]
