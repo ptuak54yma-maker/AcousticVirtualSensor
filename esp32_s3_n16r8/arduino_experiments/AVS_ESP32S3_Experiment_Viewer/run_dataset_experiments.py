@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 BLOCK = 512
+EXCLUDED_STEM_PREFIXES = ("phoi_", "noisebowl_", "noiseevir_")
 PROFILES = ["legacy_nnls", "m64_nnls", "m128_nnls"] + [
     f"m64_fista{n}" for n in (8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096)
 ] + ["m128_fista512"]
@@ -67,6 +68,18 @@ def load_labels(path: Path) -> dict[str, int]:
             name, value = line.split(":", 1)
             out[name.strip().removesuffix(".wav") + ".wav"] = int(value.strip())
     return out
+
+
+def dataset_wavs(split: str) -> list[Path]:
+    """Return only labeled train/test WAVs, excluding auxiliary recordings."""
+    folder = ROOT / "data" / split
+    excluded = [p for p in folder.glob("*.wav")
+                if p.stem.lower().startswith(EXCLUDED_STEM_PREFIXES)]
+    if excluded:
+        print(f"Skipping {len(excluded)} auxiliary WAV(s) in {split}: " +
+              ", ".join(p.name for p in sorted(excluded)), flush=True)
+    return [p for p in sorted(folder.glob("*.wav"))
+            if not p.stem.lower().startswith(EXCLUDED_STEM_PREFIXES)]
 
 
 def tune_peaks(samples: list[dict]) -> dict:
@@ -138,9 +151,9 @@ def main() -> None:
     test_labels = load_labels(ROOT / "data" / "test" / "label.txt")
     files: list[tuple[str, Path]] = []
     if args.split in ("all", "train"):
-        files += [("train", p) for p in sorted((ROOT / "data" / "train").glob("*.wav"))]
+        files += [("train", p) for p in dataset_wavs("train")]
     if args.split in ("all", "test"):
-        files += [("test", p) for p in sorted((ROOT / "data" / "test").glob("*.wav"))]
+        files += [("test", p) for p in dataset_wavs("test")]
     if args.max_files:
         files = files[:args.max_files]
     if not files:

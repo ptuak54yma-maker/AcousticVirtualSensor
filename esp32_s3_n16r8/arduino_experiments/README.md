@@ -177,8 +177,11 @@ python -m pip install -r .\esp32_s3_n16r8\arduino_experiments\requirements.txt
 python .\esp32_s3_n16r8\arduino_experiments\AVS_ESP32S3_Experiment_Viewer\run_dataset_experiments.py --port COM4 --split all
 ```
 
-The runner walks every `data/train/*.wav` and `data/test/*.wav` automatically;
-no per-file commands or re-flashing are needed. `--split train` or `--split
+The runner reads WAVs only from `data/train` and `data/test`. It skips files
+whose names start with `phoi_`, `noisebowl_`, or `noiseevir_`, even if they are
+inside one of those folders. With the current dataset this means 18 `Train_*.wav`
+files for train/validation and 4 `Bowl_*.wav` files for test: 22 WAVs total.
+No per-file commands or re-flashing are needed. `--split train` or `--split
 test` selects a subset, and `--max-files 1` is available for a short protocol
 check; `--max-seconds 2` truncates files to two seconds for a quick protocol
 check (truncated runs do not produce label metrics). Output goes to
