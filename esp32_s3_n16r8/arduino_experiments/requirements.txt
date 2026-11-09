@@ -2,3 +2,4 @@ numpy>=1.23
 soundfile>=0.12
 pyserial>=3.5
 matplotlib>=3.7
+scipy>=1.9

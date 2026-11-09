@@ -148,3 +148,43 @@ exactly 1-4 seconds, add `--duration-sec 3`, but that may end one frame before a
 full peak window is available. The synthetic-frame check remains available with
 `--synthetic --frames 100`. This measures processing on actual WAV samples but
 does not capture through an I2S microphone or include microphone/ADC latency.
+
+## Compare Arduino inference profiles and view results
+
+The separate `AVS_ESP32S3_Experiment_Viewer` sketch replays the same WAV for
+the legacy 1025-bin NNLS model, Mel64 and Mel128 NNLS, and Mel64 FISTA at 8,
+16, 32, 64, 128, 256, 512, 1024, 2048, and 4096 iterations (plus Mel128
+FISTA512). It records the event activation envelope and MCU processing time
+for every audio frame. The host tool also computes the Python SciPy NNLS Mel64
+reference envelope and, when a label exists for the WAV, reports event-count
+accuracy using the project's saved peak settings.
+
+Generate the model header before opening the sketch in Arduino IDE. The
+generated header contains model arrays and is intentionally local to the
+machine:
+
+```powershell
+python .\esp32_s3_n16r8\tools\export_arduino_experiment_models.py
+```
+
+Open `AVS_ESP32S3_Experiment_Viewer\AVS_ESP32S3_Experiment_Viewer.ino` in
+Arduino IDE, select the ESP32-S3 board and port, then upload. Close Serial
+Monitor and run:
+
+```powershell
+python -m pip install -r .\esp32_s3_n16r8\arduino_experiments\requirements.txt
+python .\esp32_s3_n16r8\arduino_experiments\AVS_ESP32S3_Experiment_Viewer\run_experiments.py --port COM4 --wav .\data\test\Bowl_0.wav
+```
+
+All profiles run by default. Choose a subset with `--profiles`, for example
+`--profiles legacy_nnls m64_fista64 m64_fista512 m128_fista512`. The tool
+writes per-frame CSV, labeled-file accuracy CSV when available, and a PNG
+comparing activation envelopes and MCU processing time under
+`outputs\arduino_experiment_viewer`. The Python reference curve and score are
+included when the Mel64 model and saved Python peak settings are present.
+The firmware buffers up to 4096 frames for each replay.
+
+The legacy profile uses fixed-sweep nonnegative coordinate descent on the old
+linear-frequency dictionary. It approximates the older MCU NNLS path; the
+Python reference is SciPy's exact NNLS solver. They are labeled separately in
+the saved results.

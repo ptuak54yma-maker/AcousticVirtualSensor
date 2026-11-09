@@ -44,3 +44,5 @@ embedded/src/w_standard_data.h
 !data/test/label.txt
 experiments/pipeline_k48_mel/results/host_cpp_inputs/
 experiments/pipeline_k48_mel/results/activations_fista_*.npz
+esp32_s3_n16r8/arduino_experiments/AVS_ESP32S3_Experiment_Viewer/experiment_models.h
+outputs/arduino_experiment_viewer/
