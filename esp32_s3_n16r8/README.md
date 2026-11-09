@@ -4,14 +4,16 @@ Experimental ESP-IDF firmware project for the ESP32-S3. Every model and
 pipeline here is still being evaluated; none is the finalized selection. By
 default it runs a synthetic-audio demo and prints results to the serial console,
 so it can be flashed and tried without a microphone or other external
-peripheral. It reuses the current NMF dictionary candidate without retraining
-or altering it.
+peripheral. The firmware now uses the retrained 48-component Mel dictionary
+from `experiments/pipeline_k48_mel`; the original linear-frequency
+`models/nmf/W_standard.npy` is preserved.
 
 ## What runs on the board
 
 Synthetic PCM by default (or I2S microphone when demo mode is disabled) →
 2,048-sample frame / 1,024-sample hop → frame-mean removal → periodic Hann →
-2,048-point FFT → `log1p(|X|)` → fixed-dictionary NNLS (1,025 × 48) → sum of
+2,048-point FFT → 64-band Slaney Mel magnitude → `log1p` compression →
+fixed-dictionary NNLS (64 × 48) → sum of
 the first 24 event activations → 3-second event peak count → serial log with
 count and parts/second. Demo mode processes five seconds of synthetic audio
 then prints `DEMO_DONE` and idles.
@@ -55,26 +57,41 @@ real-world detection accuracy.
 Install ESP-IDF 5.3+ using Espressif's [Windows setup](https://docs.espressif.com/projects/esp-idf/en/v5.3.5/esp32s3/get-started/windows-setup.html),
 then open the **ESP-IDF PowerShell** shortcut so `idf.py` and its toolchain are
 available. Connect the board directly to the laptop by USB. In Device Manager,
-find the COM port that appears for the board. From this folder, export the
-frozen dictionary once (Python with `numpy` required):
+find the COM port that appears for the board. From the repository root, train,
+compare, and export the Mel dictionary (Python with the project requirements):
 
 ```powershell
-python tools/export_dictionary.py
-idf.py set-target esp32s3
-idf.py build
-idf.py -p COM5 flash monitor
+python experiments/pipeline_k48_mel/train_dictionary.py
+python experiments/pipeline_k48_mel/compare_iterations.py
+python esp32_s3_n16r8/tools/export_mel_dictionary.py
 ```
 
-Replace `COM5` with the board's actual port. The first build can take several
-minutes. `flash monitor` both writes the firmware and opens its serial output;
-exit the monitor with `Ctrl+]`. The ESP-IDF Windows installer adds a Start Menu
+Then change to this `esp32_s3_n16r8` folder and build:
+
+```powershell
+cd esp32_s3_n16r8
+idf.py set-target esp32s3
+idf.py build
+```
+
+The model comparison saves a recommended FISTA iteration count and peak
+thresholds to `experiments/pipeline_k48_mel/results/`; the current validation
+selection is 512 iterations, prominence 5.67824, distance 6. The selected
+`AVS_NNLS_ITERATIONS`, `AVS_PEAK_PROMINENCE`, and `AVS_PEAK_DISTANCE` are already
+set in `espidf_experiments/avs_config.h`. The generated model header
+is ignored by Git because it can be regenerated from the trained model bundle.
+The build creates the firmware binary under `build/`; no board is required to
+compile it. When a board is available, flash and monitor with
+`idf.py -p COM5 flash monitor`, replacing `COM5` with its port. The ESP-IDF installer adds a Start Menu
 shortcut that opens a shell with the required environment set up, as described
 in [Espressif's Windows flashing guide](https://docs.espressif.com/projects/esp-idf/en/v5.3.5/esp32s3/get-started/windows-setup.html).
 
-If running the exporter from another working directory, pass explicit paths,
-for example `--input ..\models\nmf\W_standard.npy --output espidf_experiments\w_standard_data.h`.
-The generated header is ignored by Git because it is reproducible from the
-existing `W_standard.npy`.
+The Python reference uses SciPy NNLS on the same trained W and Mel features.
+The iteration study compares that result with the projected FISTA solver used
+by firmware and reports count accuracy on fixed calibration, validation, and
+held-out test recordings. It also writes `.f32` feature inputs for
+`tools/fista_host_eval.cpp`, a host runner built from the exact firmware FISTA
+source when a C++ compiler is available.
 
 ## ESP-DSP optimization variant
 
@@ -84,8 +101,8 @@ Sensor board → Use ESP-DSP optimized FFT and NNLS kernels**, then build as usu
 ESP-IDF Component Manager downloads the pinned compatible ESP-DSP 1.8.x
 dependency on the first build. The alternate implementation is in
 `espidf_experiments/avs_pipeline_espdsp.cpp`; it uses ESP-DSP's complex FFT and float dot
-products while retaining the same 2,048 point frame, Hann window, log spectrum,
-48 component dictionary, and 64 FISTA iterations. Disable the option to return
+products while retaining the same 2,048 point frame, Hann window, 64-band Mel
+front end, 48 component dictionary, and selected FISTA iteration count. Disable the option to return
 to the original implementation.
 
 This is an optimization candidate, not a validated speed claim. Compare spectra

@@ -78,7 +78,7 @@ void process_frame() {
         return;
     }
     const avs_status_t status = avs_solve_nnls(
-        g_spectrum.log_magnitude, AVS_W_STANDARD, &g_nnls, g_activation,
+        g_spectrum.features, AVS_W_STANDARD, &g_nnls, g_activation,
         kNnlsIterations);
     if (status != AVS_OK) {
         ESP_LOGW(kTag, "NNLS frame skipped (status=%d)", static_cast<int>(status));

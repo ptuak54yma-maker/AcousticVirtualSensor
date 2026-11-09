@@ -22,7 +22,7 @@ typedef struct {
     float imag[AVS_N_FFT];
 } avs_fft_workspace_t;
 
-typedef struct { float log_magnitude[AVS_NUM_BINS]; } avs_spectrum_t;
+typedef struct { float features[AVS_NUM_BINS]; } avs_spectrum_t;
 
 void avs_make_hann(float *window, size_t length);
 avs_status_t avs_fft_init(void);

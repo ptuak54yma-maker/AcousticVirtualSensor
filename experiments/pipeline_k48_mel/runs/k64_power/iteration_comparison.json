@@ -1,0 +1,97 @@
+{
+  "model": "E:\\HUST\\Master\\Lu\u1eadn v\u0103n\\AcousticVirtualSensor\\experiments\\pipeline_k48_mel\\models\\W_standard_mel.npz",
+  "W_shape": [
+    64,
+    48
+  ],
+  "source_W_saved_to": "E:\\HUST\\Master\\Lu\u1eadn v\u0103n\\AcousticVirtualSensor\\models\\nmf\\W_standard_mel.npy",
+  "compressor": "power",
+  "compressor_reference": 0.014677602797746658,
+  "n_mels": 64,
+  "components_event_bowl_env": [
+    24,
+    12,
+    12
+  ],
+  "fista_iterations": [
+    8,
+    16,
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024,
+    2048,
+    4096
+  ],
+  "python_reference": "SciPy scipy.optimize.nnls, fit on same W and Mel features",
+  "mcu_solver": "same projected FISTA algorithm and float32 Gram-matrix math as espidf_experiments/avs_pipeline.cpp",
+  "split_policy": {
+    "calibration": "14 fixed Train_*.wav recordings",
+    "validation": "4 held-out Train_*.wav recordings",
+    "test": "all labeled data/test WAVs"
+  },
+  "python_params": {
+    "calibration_mae": 1.4285714285714286,
+    "distance": 6,
+    "prominence": 8.065982599258406
+  },
+  "fista_params": {
+    "python_scipy_nnls": {
+      "calibration_mae": 1.4285714285714286,
+      "distance": 6,
+      "prominence": 8.065982599258406
+    },
+    "fista_8": {
+      "calibration_mae": 1.3571428571428572,
+      "distance": 7,
+      "prominence": 1.9461464881896973
+    },
+    "fista_16": {
+      "calibration_mae": 1.2142857142857142,
+      "distance": 7,
+      "prominence": 2.427643089294434
+    },
+    "fista_32": {
+      "calibration_mae": 1.4285714285714286,
+      "distance": 7,
+      "prominence": 2.3229652023315417
+    },
+    "fista_64": {
+      "calibration_mae": 1.3571428571428572,
+      "distance": 7,
+      "prominence": 2.1756778717041034
+    },
+    "fista_128": {
+      "calibration_mae": 1.2857142857142858,
+      "distance": 6,
+      "prominence": 6.437995281219478
+    },
+    "fista_256": {
+      "calibration_mae": 1.3571428571428572,
+      "distance": 7,
+      "prominence": 3.8068977832794313
+    },
+    "fista_512": {
+      "calibration_mae": 1.5,
+      "distance": 6,
+      "prominence": 7.9304263448715435
+    },
+    "fista_1024": {
+      "calibration_mae": 1.4285714285714286,
+      "distance": 6,
+      "prominence": 8.006746959686284
+    },
+    "fista_2048": {
+      "calibration_mae": 1.5,
+      "distance": 6,
+      "prominence": 8.123535380363485
+    },
+    "fista_4096": {
+      "calibration_mae": 1.4285714285714286,
+      "distance": 6,
+      "prominence": 8.069582319259624
+    }
+  }
+}

@@ -1,0 +1,43 @@
+{
+  "model": "E:\\HUST\\Master\\Lu\u1eadn v\u0103n\\AcousticVirtualSensor\\experiments\\pipeline_k48_mel\\models\\W_standard_mel.npz",
+  "W_shape": [
+    32,
+    48
+  ],
+  "source_W_saved_to": "E:\\HUST\\Master\\Lu\u1eadn v\u0103n\\AcousticVirtualSensor\\models\\nmf\\W_standard_mel.npy",
+  "compressor": "power",
+  "compressor_reference": 0.012087193317711353,
+  "n_mels": 32,
+  "components_event_bowl_env": [
+    24,
+    12,
+    12
+  ],
+  "fista_iterations": [
+    2048
+  ],
+  "python_reference": "SciPy scipy.optimize.nnls, fit on same W and Mel features",
+  "mcu_solver": "same projected FISTA algorithm and float32 Gram-matrix math as espidf_experiments/avs_pipeline.cpp",
+  "split_policy": {
+    "calibration": "14 fixed Train_*.wav recordings",
+    "validation": "4 held-out Train_*.wav recordings",
+    "test": "all labeled data/test WAVs"
+  },
+  "python_params": {
+    "calibration_mae": 2.0,
+    "distance": 6,
+    "prominence": 11.449437999725365
+  },
+  "fista_params": {
+    "python_scipy_nnls": {
+      "calibration_mae": 2.0,
+      "distance": 6,
+      "prominence": 11.449437999725365
+    },
+    "fista_2048": {
+      "calibration_mae": 1.7857142857142858,
+      "distance": 6,
+      "prominence": 9.824176216125474
+    }
+  }
+}

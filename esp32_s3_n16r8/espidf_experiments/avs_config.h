@@ -4,13 +4,11 @@
 #define AVS_SAMPLE_RATE       44100u
 #define AVS_N_FFT             2048u
 #define AVS_HOP_LENGTH        1024u
-#define AVS_NUM_BINS          1025u
+#define AVS_NUM_BINS          64u
 #define AVS_NUM_COMPONENTS    48u
 #define AVS_EVENT_COMPONENTS  24u
-#define AVS_NNLS_ITERATIONS   64u
-#define AVS_PEAK_DISTANCE     4u
-/* Initial embedded baseline. Replace with the project's trained peak settings
- * after comparing this device's envelope against the Python reference. */
-#define AVS_PEAK_PROMINENCE   0.01f
+#define AVS_NNLS_ITERATIONS   512u
+#define AVS_PEAK_DISTANCE     6u
+#define AVS_PEAK_PROMINENCE   5.67823944f
 
 #endif

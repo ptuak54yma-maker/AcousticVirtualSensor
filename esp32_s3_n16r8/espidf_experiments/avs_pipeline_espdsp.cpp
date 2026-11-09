@@ -1,4 +1,5 @@
 #include "avs_pipeline.h"
+#include "w_standard_mel_data.h"
 
 #include "dsps_dotprod.h"
 #include "dsps_fft2r.h"
@@ -54,10 +55,25 @@ extern "C" avs_status_t avs_compute_spectrum(
         return AVS_ERR_NUMERIC;
     }
 
-    for (size_t k = 0; k < AVS_NUM_BINS; ++k) {
-        const float re = g_fft_interleaved[2u * k];
-        const float im = g_fft_interleaved[2u * k + 1u];
-        out->log_magnitude[k] = std::log1p(std::sqrt(re * re + im * im));
+    for (size_t mel = 0; mel < AVS_NUM_BINS; ++mel) {
+        float power = 0.0f;
+        for (size_t i = AVS_MEL_OFFSETS[mel]; i < AVS_MEL_OFFSETS[mel + 1u]; ++i) {
+            const size_t k = AVS_MEL_BIN_INDEX[i];
+            const float re = g_fft_interleaved[2u * k];
+            const float im = g_fft_interleaved[2u * k + 1u];
+#if AVS_MEL_INPUT_POWER
+            power += AVS_MEL_WEIGHTS[i] * (re * re + im * im);
+#else
+            power += AVS_MEL_WEIGHTS[i] * std::sqrt(re * re + im * im);
+#endif
+        }
+#if AVS_MEL_COMPRESSOR_LOG1P
+        out->features[mel] = std::log1p(power / AVS_MEL_REFERENCE);
+#elif AVS_MEL_COMPRESSOR_POWER
+        out->features[mel] = std::pow(power / AVS_MEL_REFERENCE, AVS_MEL_POWER_GAMMA);
+#else
+        out->features[mel] = power / AVS_MEL_REFERENCE;
+#endif
     }
     return AVS_OK;
 }

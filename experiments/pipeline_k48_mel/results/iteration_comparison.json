@@ -1,0 +1,107 @@
+{
+  "model": "E:\\HUST\\Master\\Lu\u1eadn v\u0103n\\AcousticVirtualSensor\\experiments\\pipeline_k48_mel\\models\\W_standard_mel.npz",
+  "W_shape": [
+    64,
+    48
+  ],
+  "source_W_saved_to": "E:\\HUST\\Master\\Lu\u1eadn v\u0103n\\AcousticVirtualSensor\\models\\nmf\\W_standard_mel.npy",
+  "compressor": "log1p",
+  "compressor_reference": 0.02271423488855362,
+  "n_mels": 64,
+  "components_event_bowl_env": [
+    24,
+    12,
+    12
+  ],
+  "fista_iterations": [
+    8,
+    16,
+    32,
+    64,
+    128,
+    256,
+    512,
+    1024,
+    2048,
+    4096
+  ],
+  "python_reference": "SciPy scipy.optimize.nnls, fit on same W and Mel features",
+  "mcu_solver": "same projected FISTA algorithm and float32 Gram-matrix math as espidf_experiments/avs_pipeline.cpp",
+  "split_policy": {
+    "calibration": "14 fixed Train_*.wav recordings",
+    "validation": "4 held-out Train_*.wav recordings",
+    "test": "all labeled data/test WAVs"
+  },
+  "python_params": {
+    "calibration_mae": 1.4285714285714286,
+    "distance": 6,
+    "prominence": 5.472146987915039
+  },
+  "fista_params": {
+    "python_scipy_nnls": {
+      "calibration_mae": 1.4285714285714286,
+      "distance": 6,
+      "prominence": 5.472146987915039
+    },
+    "fista_8": {
+      "calibration_mae": 1.2857142857142858,
+      "distance": 6,
+      "prominence": 3.533490314483648
+    },
+    "fista_16": {
+      "calibration_mae": 1.2142857142857142,
+      "distance": 6,
+      "prominence": 3.232769527435298
+    },
+    "fista_32": {
+      "calibration_mae": 1.2142857142857142,
+      "distance": 6,
+      "prominence": 3.4569239377975207
+    },
+    "fista_64": {
+      "calibration_mae": 1.2857142857142858,
+      "distance": 6,
+      "prominence": 2.9660398530960546
+    },
+    "fista_128": {
+      "calibration_mae": 1.2142857142857142,
+      "distance": 6,
+      "prominence": 2.927684700489049
+    },
+    "fista_256": {
+      "calibration_mae": 1.3571428571428572,
+      "distance": 6,
+      "prominence": 3.0661773586273195
+    },
+    "fista_512": {
+      "calibration_mae": 1.3571428571428572,
+      "distance": 6,
+      "prominence": 5.678239440917967
+    },
+    "fista_1024": {
+      "calibration_mae": 1.4285714285714286,
+      "distance": 6,
+      "prominence": 5.6505221128463825
+    },
+    "fista_2048": {
+      "calibration_mae": 1.4285714285714286,
+      "distance": 6,
+      "prominence": 5.538075256347672
+    },
+    "fista_4096": {
+      "calibration_mae": 1.4285714285714286,
+      "distance": 6,
+      "prominence": 5.49024696350096
+    }
+  },
+  "firmware_selection": {
+    "criterion": "lowest FISTA iteration count with calibration and validation accuracy >= SciPy NNLS",
+    "recommended_iterations": 512,
+    "test_labels_used_for_selection": false
+  },
+  "legacy_python_baseline": {
+    "model": "original 1,025-bin K=48 Python pipeline",
+    "test_accuracy_percent": 96.60138248847927,
+    "source": "experiments/pipeline_k24_mel/results/summary_metrics.csv"
+  }
+}

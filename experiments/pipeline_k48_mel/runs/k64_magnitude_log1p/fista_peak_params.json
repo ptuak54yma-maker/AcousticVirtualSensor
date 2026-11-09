@@ -1,0 +1,12 @@
+{
+  "python_scipy_nnls": {
+    "calibration_mae": 1.4285714285714286,
+    "distance": 6,
+    "prominence": 5.472146987915039
+  },
+  "fista_2048": {
+    "calibration_mae": 1.4285714285714286,
+    "distance": 6,
+    "prominence": 5.538075256347672
+  }
+}

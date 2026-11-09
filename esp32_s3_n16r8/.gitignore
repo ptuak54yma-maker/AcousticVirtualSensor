@@ -3,5 +3,6 @@ sdkconfig
 sdkconfig.old
 dependencies.lock
 espidf_experiments/w_standard_data.h
+espidf_experiments/w_standard_mel_data.h
 arduino_experiments/AVS_ESP32S3_Demo/w_standard_data.h
 arduino_experiments/AVS_ESP32S3_Optimized_Experiment/w_standard_data.h

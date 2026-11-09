@@ -21,7 +21,8 @@ AcousticVirtualSensor/
 ├── README.md                 # Tài liệu hướng dẫn sử dụng
 │
 ├── experiments/
-│   └── pipeline_k24_mel/     # Pipeline NMF thử nghiệm K=24 với Mel filterbank
+│   ├── pipeline_k24_mel/     # Pipeline NMF thử nghiệm K=24 với Mel filterbank
+│   └── pipeline_k48_mel/     # W standard K=48 retrain với Mel cho ESP32-S3
 │
 ├── data/
 │   ├── train/                # Chứa file audio *.wav huấn luyện

@@ -1,0 +1,7 @@
+split,model,files,mean_accuracy_percent,count_mae,total_true,total_pred
+calibration,python_scipy_nnls,14,94.03093299355437,1.2857142857142858,343,347
+validation,python_scipy_nnls,4,93.80853065063592,1.5,94,98
+test,python_scipy_nnls,4,77.79681057482415,13.25,253,306
+calibration,fista_2048,14,94.03093299355437,1.2857142857142858,343,347
+validation,fista_2048,4,93.80853065063592,1.5,94,98
+test,fista_2048,4,78.63014390815749,12.75,253,304

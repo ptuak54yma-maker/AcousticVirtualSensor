@@ -1,0 +1,57 @@
+{
+  "python_scipy_nnls": {
+    "calibration_mae": 1.4285714285714286,
+    "distance": 6,
+    "prominence": 5.472146987915039
+  },
+  "fista_8": {
+    "calibration_mae": 1.2857142857142858,
+    "distance": 6,
+    "prominence": 3.533490314483648
+  },
+  "fista_16": {
+    "calibration_mae": 1.2142857142857142,
+    "distance": 6,
+    "prominence": 3.232769527435298
+  },
+  "fista_32": {
+    "calibration_mae": 1.2142857142857142,
+    "distance": 6,
+    "prominence": 3.4569239377975207
+  },
+  "fista_64": {
+    "calibration_mae": 1.2857142857142858,
+    "distance": 6,
+    "prominence": 2.9660398530960546
+  },
+  "fista_128": {
+    "calibration_mae": 1.2142857142857142,
+    "distance": 6,
+    "prominence": 2.927684700489049
+  },
+  "fista_256": {
+    "calibration_mae": 1.3571428571428572,
+    "distance": 6,
+    "prominence": 3.0661773586273195
+  },
+  "fista_512": {
+    "calibration_mae": 1.3571428571428572,
+    "distance": 6,
+    "prominence": 5.678239440917967
+  },
+  "fista_1024": {
+    "calibration_mae": 1.4285714285714286,
+    "distance": 6,
+    "prominence": 5.6505221128463825
+  },
+  "fista_2048": {
+    "calibration_mae": 1.4285714285714286,
+    "distance": 6,
+    "prominence": 5.538075256347672
+  },
+  "fista_4096": {
+    "calibration_mae": 1.4285714285714286,
+    "distance": 6,
+    "prominence": 5.49024696350096
+  }
+}
