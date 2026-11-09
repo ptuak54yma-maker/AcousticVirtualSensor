@@ -56,6 +56,12 @@ void solve(const float *v){const float *w=dictW();size_t F=featureRows();
     for(size_t j=0;j<K;j++){float gy=0;for(size_t k=0;k<K;k++)gy+=gram[j*K+k]*y[k];nextH[j]=fmaxf(0,y[j]-(gy-rhs[j])/L);}
     for(size_t j=0;j<K;j++)y[j]=nextH[j]+((t-1)/tn)*(nextH[j]-h[j]);memcpy(h,nextH,sizeof(h));t=tn;}
 }
+const char *profileId(){static char id[32];
+  if(profile.kind==0)snprintf(id,sizeof(id),"legacy_nnls");
+  else if(profile.kind==1)snprintf(id,sizeof(id),"m%u_fista%u",(unsigned)profile.mel,(unsigned)profile.iterations);
+  else snprintf(id,sizeof(id),"m%u_nnls",(unsigned)profile.mel);
+  return id;
+}
 void processFrame(){if(frameCount>=MAX_FRAMES)return;uint32_t start=(uint32_t)esp_timer_get_time();
   for(size_t n=0;n<NFFT;n++){realPart[n]=frame[n]*windowFn[n];imagPart[n]=0;}fft();
   for(size_t f=0;f<NBINS;f++)magnitude[f]=sqrtf(realPart[f]*realPart[f]+imagPart[f]*imagPart[f]);
@@ -64,13 +70,18 @@ void processFrame(){if(frameCount>=MAX_FRAMES)return;uint32_t start=(uint32_t)es
 }
 void addSample(float x){x-=fileMean;if(frameFill<NFFT){frame[frameFill++]=x;if(frameFill==NFFT)processFrame();return;}
   frame[HOP+hopFill++]=x;if(hopFill==HOP){memmove(frame,frame+HOP,(NFFT-HOP)*sizeof(float));hopFill=0;processFrame();}}
-void printResults(){Serial.println("RESULTS_BEGIN");for(size_t i=0;i<frameCount;i++)Serial.printf("ROW,%s,%u,%.6f,%lu\n",profile.name,(unsigned)i,(double)(i*HOP)/(double)44100,envelope[i],(unsigned long)frameUs[i]);
-  Serial.printf("DONE,%s,%u,%llu\n",profile.name,(unsigned)frameCount,(unsigned long long)samplesSeen);}
+void printResults(){Serial.println("RESULTS_BEGIN");uint64_t totalUs=0;uint32_t maxUs=0;float scoreSum=0,scoreMin=INFINITY,scoreMax=0;
+  for(size_t i=0;i<frameCount;i++){Serial.printf("ROW,%s,%u,%.6f,%.9g,%lu\n",profileId(),(unsigned)i,(double)(i*HOP)/(double)44100,(double)envelope[i],(unsigned long)frameUs[i]);
+    totalUs+=frameUs[i];maxUs=max(maxUs,frameUs[i]);scoreSum+=envelope[i];scoreMin=fminf(scoreMin,envelope[i]);scoreMax=fmaxf(scoreMax,envelope[i]);}
+  Serial.printf("SUMMARY,%s,frames=%u,score_mean=%.9g,score_min=%.9g,score_max=%.9g,mean_us=%llu,max_us=%lu\n",profileId(),(unsigned)frameCount,
+    frameCount?(double)(scoreSum/frameCount):0.0,(double)(frameCount?scoreMin:0.0f),(double)scoreMax,
+    (unsigned long long)(frameCount?totalUs/frameCount:0),(unsigned long)maxUs);
+  Serial.printf("DONE,%s,%u,%u,%llu\n",profileId(),(unsigned)profile.iterations,(unsigned)frameCount,(unsigned long long)samplesSeen);}
 void handle(const String &cmd){if(cmd.startsWith("PROFILE ")){String p=cmd.substring(8);if(p=="legacy_nnls"){profile={"legacy_nnls",0,0,0};}
   else if(p=="m64_nnls"){profile={"m64_nnls",2,64,0};} else if(p=="m128_nnls"){profile={"m128_nnls",2,128,0};}
   else if(p.startsWith("m64_fista")){unsigned n=p.substring(9).toInt();if(n==0)n=512;profile={"m64_fista",1,64,(uint16_t)min(n,65535u)};}
   else if(p=="m128_fista512"){profile={"m128_fista",1,128,512};} else {Serial.println("ERROR PROFILE");return;}
-  initGram();Serial.printf("PROFILE_OK,%s,%u\n",profile.name,(unsigned)profile.iterations);return;}
+  initGram();Serial.printf("PROFILE_OK,%s,features=%u,iterations=%u,solver=%s\n",profileId(),(unsigned)featureRows(),(unsigned)profile.iterations,profile.kind==1?"FISTA":"NNLS_CD");return;}
   if(cmd.startsWith("START ")){char *end=nullptr;samplesExpected=strtoull(cmd.c_str()+6,&end,10);fileMean=end?strtof(end,nullptr):0;samplesSeen=0;frameCount=0;frameFill=0;hopFill=0;stream=true;Serial.println("ACK_START");return;}
   if(cmd.startsWith("DATA ")){if(!stream){Serial.println("ERROR NO_STREAM");return;}size_t count=strtoul(cmd.c_str()+5,nullptr,10);if(!count||count>BLOCK||!Serial.readBytes((char*)rx,count*4)){Serial.println("ERROR DATA");stream=false;return;}
     float *vals=(float*)rx;for(size_t i=0;i<count;i++){addSample(vals[i]);samplesSeen++;}Serial.printf("ACK %llu\n",(unsigned long long)samplesSeen);return;}
