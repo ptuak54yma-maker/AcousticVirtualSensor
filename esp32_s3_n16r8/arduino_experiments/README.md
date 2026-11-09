@@ -149,42 +149,59 @@ full peak window is available. The synthetic-frame check remains available with
 `--synthetic --frames 100`. This measures processing on actual WAV samples but
 does not capture through an I2S microphone or include microphone/ADC latency.
 
-## Compare Arduino inference profiles and view results
+## Batch comparison on ESP32-S3
 
-The separate `AVS_ESP32S3_Experiment_Viewer` sketch replays the same WAV for
-the legacy 1025-bin NNLS model, Mel64 and Mel128 NNLS, and Mel64 FISTA at 8,
-16, 32, 64, 128, 256, 512, 1024, 2048, and 4096 iterations (plus Mel128
-FISTA512). It records the event activation envelope and MCU processing time
-for every audio frame. The host tool also computes the Python SciPy NNLS Mel64
-reference envelope and, when a label exists for the WAV, reports event-count
-accuracy using the project's saved peak settings.
+`AVS_ESP32S3_Experiment_Viewer` runs the entire profile sweep in C++ for each
+frame while the host streams each WAV once. Profiles are legacy 1025-bin NNLS,
+Mel64 NNLS, Mel128 NNLS, Mel64 FISTA at 8 through 4096 iterations, and Mel128
+FISTA512. The C++ sketch emits Mel64/Mel128 features and all 48 activations for
+each profile, so the host can compare features, H, event envelopes, peak
+counts, and timing. Frame state is streaming; WAVs are not limited by a
+fixed-size envelope array.
 
-Generate the model header before opening the sketch in Arduino IDE. The
-generated header contains model arrays and is intentionally local to the
-machine:
+Generate the model header once; the generated arrays remain local and are not
+checked in:
 
 ```powershell
 python .\esp32_s3_n16r8\tools\export_arduino_experiment_models.py
 ```
 
 Open `AVS_ESP32S3_Experiment_Viewer\AVS_ESP32S3_Experiment_Viewer.ino` in
-Arduino IDE, select the ESP32-S3 board and port, then upload. Close Serial
-Monitor and run:
+Arduino IDE, select **ESP32S3 Dev Module** and the COM port, set **PSRAM = OPI
+PSRAM** and **Partition Scheme = Huge APP**, then upload once. PSRAM is used
+for per-file score buffers. Close Serial Monitor. Then install host packages
+and run one batch command:
 
 ```powershell
 python -m pip install -r .\esp32_s3_n16r8\arduino_experiments\requirements.txt
-python .\esp32_s3_n16r8\arduino_experiments\AVS_ESP32S3_Experiment_Viewer\run_experiments.py --port COM4 --wav .\data\test\Bowl_0.wav
+python .\esp32_s3_n16r8\arduino_experiments\AVS_ESP32S3_Experiment_Viewer\run_dataset_experiments.py --port COM4 --split all
 ```
 
-All profiles run by default. Choose a subset with `--profiles`, for example
-`--profiles legacy_nnls m64_fista64 m64_fista512 m128_fista512`. The tool
-writes per-frame CSV, labeled-file accuracy CSV when available, and a PNG
-comparing activation envelopes and MCU processing time under
-`outputs\arduino_experiment_viewer`. The Python reference curve and score are
-included when the Mel64 model and saved Python peak settings are present.
-The firmware buffers up to 4096 frames for each replay.
+The runner walks every `data/train/*.wav` and `data/test/*.wav` automatically;
+no per-file commands or re-flashing are needed. `--split train` or `--split
+test` selects a subset, and `--max-files 1` is available for a short protocol
+check; `--max-seconds 2` truncates files to two seconds for a quick protocol
+check (truncated runs do not produce label metrics). Output goes to
+`outputs\arduino_dataset_experiments`:
 
-The legacy profile uses fixed-sweep nonnegative coordinate descent on the old
-linear-frequency dictionary. It approximates the older MCU NNLS path; the
-Python reference is SciPy's exact NNLS solver. They are labeled separately in
-the saved results.
+- `cpp_activations.csv`: each frame's 48 H values and event envelope for all
+  C++ profiles.
+- `cpp_features.csv` and per-file `*_cpp_features.npz`: C++ Mel64/Mel128
+  features.
+- `feature_parity.csv` and `activation_parity.csv`: C++ versus matching Python
+  features/H metrics, including relative error and event-envelope correlation.
+- `python_cpp_count_comparison.csv` and `python_cpp_count_summary.csv`: C++ and
+  Python predictions compared using the same train-selected peak parameters.
+- `predictions_per_file.csv`, `count_metrics.csv`: per-file predictions and
+  train-tuned peak settings, with summary Count Accuracy, MAE, and count-based
+  F1 for train and test.
+- `timing_summary.csv`: mean/P50/P95/P99/max compute time, percentage below the
+  23.22 ms target, plus telemetry wall time for the full sweep.
+- `memory_samples.csv`, `files_processed.csv`, and `dataset_comparison.png`.
+
+Only product counts are present in the supplied label files, so Event F1 is
+reported as a count-based proxy; timestamp-level event matching needs
+frame/peak annotations. The legacy MCU NNLS profile uses fixed-sweep
+coordinate descent, while Python's exact reference uses SciPy NNLS. Timing
+separates computation from serial telemetry; the latter is excluded from the
+per-profile compute latency.
