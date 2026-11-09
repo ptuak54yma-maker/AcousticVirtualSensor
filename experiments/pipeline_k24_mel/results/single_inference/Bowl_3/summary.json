@@ -1,0 +1,20 @@
+{
+  "input_wav": "E:\\HUST\\Master\\Lu\u1eadn v\u0103n\\AcousticVirtualSensor\\data\\test\\Bowl_3.wav",
+  "output_dir": "experiments/pipeline_k24_mel/results",
+  "pipeline": "experimental K=24 Mel-NMF",
+  "components_event_bowl_env": [
+    12,
+    6,
+    6
+  ],
+  "n_mels": 64,
+  "mel_input": "power",
+  "compressor": "log1p",
+  "compressor_reference": 0.014677602797746658,
+  "peak_prominence": 0.0059823933988809586,
+  "peak_distance_frames": 6,
+  "duration_s": 89.87065759637188,
+  "predicted_count": 107,
+  "true_count": 105,
+  "absolute_count_error": 2
+}

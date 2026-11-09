@@ -1,0 +1,141 @@
+Tao đã đọc phần firmware ESP32-S3 trong repo. Kết luận: code hiện tại chưa sử dụng các thư viện DSP tối ưu chuyên dụng của Espressif cho FFT và NNLS. Phần DSP chính đang được tự triển khai bằng C/C++ và float.
+
+Điều này khá quan trọng: benchmark 78.56 ms/frame của mày chưa phải kết quả sau khi khai thác đầy đủ thư viện tối ưu cho ESP32-S3.
+1. Kiểm tra từng thành phần
+Repo: AcousticVirtualSensor
+Thành phần	Cách triển khai hiện tại	Thư viện tối ưu ESP32?
+I2S	ESP-IDF driver/i2s_std.h	Có sử dụng driver phần cứng
+Hann window	Tự viết vòng lặp cos()	Không
+FFT	Tự viết Radix-2 FFT	Không
+Log spectrum	Tự viết sqrt() + log1p()	Không
+NNLS/FISTA	Tự viết các vòng lặp matrix-vector	Không
+Event sum	Tự viết vòng lặp cộng	Không
+Peak detection	Tự viết C++	Không
+Memory	Static buffers, không cấp phát trong vòng xử lý	Có tối ưu thủ công
+
+FFT: đang tự viết, chưa dùng ESP-DSP
+Trong esp32_s3_n16r8/espidf_experiments/avs_fft.cpp, repo có hàm:
+void fft_radix2(float *real, float *imag, size_t n)
+
+
+Hàm này thực hiện:
+- Bit-reversal permutation.
+- Butterfly computation.
+- Tính twiddle factors bằng sin() và cos().
+- Tính spectrum bằng sqrt() và log1p().
+Đây là FFT Radix-2 tự triển khai, không phải hàm FFT từ ESP-DSP.
+
+Điểm đáng chú ý: code hiện tại tính wr_step, wi_step theo từng tầng, rồi cập nhật twiddle factors bằng phép nhân phức. Cách này tránh gọi sin()/cos() ở từng butterfly, nhưng vẫn chưa khai thác kernel FFT tối ưu có sẵn.
+
+Thư viện đáng xem là ESP-DSP của Espressif. Thư viện này có các hàm FFT, complex arithmetic, vector và matrix operations được tối ưu cho các kiến trúc Espressif. ESP-DSP repository.
+NNLS/FISTA: hoàn toàn tự triển khai
+Trong esp32_s3_n16r8/espidf_experiments/avs_pipeline.cpp, code tự thực hiện:
+gy += workspace->gram[j * K + k]
+    * workspace->momentum[k];
+
+
+và:
+const float projected = workspace->momentum[j]
+    - workspace->step_size * (gy - workspace->rhs[j]);
+
+x_next[j] = std::max(0.0f, projected);
+
+
+Các phép toán trong FISTA bao gồm:
+- Tính \(G=W^TW\) khi khởi tạo.
+- Tính \(b=W^Tv\) cho mỗi frame.
+- Tính \(Gy\) trong mỗi iteration.
+- Projection lên miền không âm.
+- Momentum update.
+Code có một tối ưu đúng hướng: tính trước Gram matrix \(G\) vì dictionary W cố định. Tuy nhiên, phép nhân matrix-vector vẫn dùng các vòng lặp scalar thông thường.
+
+Chưa thấy sử dụng ESP-DSP matrix/vector kernels hay thư viện tối ưu NNLS chuyên dụng.
+Peak detection: tự viết
+Phần peak detection được tách riêng trong avs_peak.cpp. Đây là thuật toán tương đối nhẹ so với NNLS nên việc chưa sử dụng thư viện DSP không phải ưu tiên lớn.
+2. Build configuration cũng xác nhận điều này
+File esp32_s3_n16r8/espidf_experiments/CMakeLists.txt hiện đăng ký:
+idf_component_register(
+    SRCS
+        "app_main.cpp"
+        "avs_pipeline.cpp"
+        "avs_fft.cpp"
+        "avs_peak.cpp"
+    INCLUDE_DIRS "."
+    REQUIRES esp_driver_i2s esp_timer
+)
+
+
+Tức là các dependency được khai báo gồm:
+- esp_driver_i2s
+- esp_timer
+Không thấy component esp-dsp được khai báo.
+
+Repo cũng có code Arduino demo, nhưng FFT trong thư mục Arduino vẫn là Radix-2 tự viết tương tự. Vì vậy, chuyển từ ESP-IDF sang Arduino IDE không tự động giúp pipeline dùng FFT tối ưu hơn.
+3. Có thể tối ưu đến mức nào bằng thư viện ESP-DSP?
+Tao đề xuất tập trung vào hai phần:
+Ưu tiên cao
+A. Thay FFT tự viết bằng ESP-DSP
+
+Sử dụng các hàm FFT float phù hợp với ESP32-S3, kiểm tra format đầu vào, scaling và thứ tự output. Đặc biệt cần xác nhận kết quả FFT và log-spectrum vẫn khớp Python.
+
+
+Ưu tiên cao nhất về tiềm năng runtime
+B. Tối ưu FISTA bằng vector/matrix kernels
+
+Có thể thử các hàm dot product, vector multiply-add và matrix-vector của ESP-DSP. Nhưng cần benchmark riêng vì K=48 khá nhỏ; một số hàm tổng quát có overhead gọi hàm hoặc layout dữ liệu không phù hợp.
+
+
+Ưu tiên thấp
+C. Tối ưu peak detection
+
+Hiện tại stage này rất nhỏ so với NNLS, chưa phải nơi đáng tập trung.
+
+
+4. Một số tối ưu khác tao phát hiện trong code
+Ngoài chuyện thư viện, có vài điểm đáng xem:
+
+Thứ nhất — bố trí dictionary.
+
+Dictionary đang lưu theo row-major:
+\[
+W[F][K]
+\]
+
+Cách bố trí này tương đối thuận tiện cho phép tính \(W^Tv\) theo từng frequency bin, nhưng phép nhân Gram matrix lại dùng các giá trị trong Gram matrix theo row. Cần thử các cách bố trí để tối ưu cache và vectorization cho từng kernel.
+
+Thứ hai — dùng SIMD/vectorization.
+
+ESP32-S3 có hỗ trợ các lệnh vector dành cho xử lý số học. Code hiện tại là vòng lặp scalar C++, nhưng compiler có thể tự vectorize một số đoạn. Không nên mặc định rằng compiler đã vectorize toàn bộ; cần kiểm tra assembly hoặc đo cycles khi bật các kernel phù hợp.
+
+Thứ ba — memory placement.
+
+Firmware khai báo workspace và các buffer static. Đây là điểm tốt vì tránh allocation trong vòng lặp. Nhưng chưa thấy chủ động đặt các buffer tính toán nóng vào vùng memory tối ưu bằng các thuộc tính như MALLOC_CAP_INTERNAL hoặc section placement. Cần đo trước khi thay đổi để tránh làm phức tạp bộ nhớ.
+5. Thứ tự tao khuyên nên làm
+Tao sẽ không thay cả FFT và NNLS cùng lúc, vì sẽ khó xác định phần nào tạo ra khác biệt.
+Thứ tự	Việc làm	Mục tiêu
+1	Benchmark FFT hiện tại	Baseline
+2	Thay FFT bằng ESP-DSP	Đo mức tăng tốc FFT
+3	Benchmark riêng NNLS/FISTA	Baseline
+4	Thử ESP-DSP vector/matrix kernels	Đo mức tăng tốc NNLS
+5	Thử layout dictionary và Gram matrix	Giảm memory overhead
+6	Benchmark toàn pipeline	Xác nhận realtime thực tế
+
+Khi so sánh, cần giữ nguyên:
+- Dictionary W.
+- Số iteration FISTA.
+- Float32.
+- Input audio.
+- Compiler optimization.
+- CPU frequency.
+- Cách đo thời gian.
+Và nhớ kiểm tra độ tương đồng output, không chỉ runtime.
+
+Kết luận cuối cùng
+Chưa tận dụng hết khả năng DSP của ESP32-S3
+Code nhúng hiện tại có driver I2S của ESP-IDF và một số tối ưu thủ công trong thuật toán FISTA, nhưng FFT và NNLS/FISTA chưa dùng thư viện DSP chuyên dụng tối ưu cho ESP32-S3.
+
+Tao đánh giá đây là hướng nên làm trước khi giảm K hoặc đổi phần cứng. Đặc biệt NNLS chiếm 75.24 ms trên tổng 78.56 ms, nên thử tối ưu kernel FISTA là quan trọng nhất.
+
+Một lưu ý: ESP-DSP có thể cải thiện đáng kể một số phép toán, nhưng không có cơ sở để hứa rằng chỉ tích hợp thư viện là pipeline sẽ đạt mục tiêu 11.6–16.3 ms/frame. Phải benchmark từng stage sau khi thay thế.
+
+Tao khuyên bước tiếp theo là tạo một nhánh benchmark ESP-DSP, giữ nguyên thuật toán và dictionary hiện tại, thay riêng FFT trước rồi mới thay các phép vector/matrix trong FISTA.

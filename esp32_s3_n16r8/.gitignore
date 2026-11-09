@@ -2,5 +2,6 @@ build/
 sdkconfig
 sdkconfig.old
 dependencies.lock
-main/w_standard_data.h
-arduino_serial_demo/AVS_ESP32S3_Demo/w_standard_data.h
+espidf_experiments/w_standard_data.h
+arduino_experiments/AVS_ESP32S3_Demo/w_standard_data.h
+arduino_experiments/AVS_ESP32S3_Optimized_Experiment/w_standard_data.h

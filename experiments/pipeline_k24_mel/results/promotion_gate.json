@@ -1,0 +1,17 @@
+{
+  "status": "HOLD",
+  "rule": "K=24 mean count accuracy must be >= both K=48 deployed and recalibrated on validation, >= K=48 deployed on held-out test, and all source NMF fits converged",
+  "validation_accuracy_percent": {
+    "k24_mel": 95.12432012432012,
+    "k48_calibrated": 91.18155236576288,
+    "k48_original": 97.93771043771044
+  },
+  "test_accuracy_percent": {
+    "k48_original": 96.60138248847927,
+    "k48_calibrated": 94.06874039938556,
+    "k24_mel": 86.68778801843317
+  },
+  "accuracy_non_degraded_on_validation": false,
+  "accuracy_non_degraded_on_test_vs_deployed_k48": false,
+  "all_nmf_sources_converged": false
+}

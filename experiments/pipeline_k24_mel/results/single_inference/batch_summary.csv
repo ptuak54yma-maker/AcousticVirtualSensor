@@ -1,0 +1,5 @@
+input_wav,output_dir,pipeline,components_event_bowl_env,n_mels,mel_input,compressor,compressor_reference,peak_prominence,peak_distance_frames,duration_s,predicted_count,true_count,absolute_count_error
+E:\HUST\Master\Luận văn\AcousticVirtualSensor\data\test\Bowl_0.wav,experiments/pipeline_k24_mel/results,experimental K=24 Mel-NMF,"[12, 6, 6]",64,power,log1p,0.014677602797746658,0.0059823933988809586,6,29.984739229024942,34,31,3
+E:\HUST\Master\Luận văn\AcousticVirtualSensor\data\test\Bowl_1.wav,experiments/pipeline_k24_mel/results,experimental K=24 Mel-NMF,"[12, 6, 6]",64,power,log1p,0.014677602797746658,0.0059823933988809586,6,44.9404081632653,57,57,0
+E:\HUST\Master\Luận văn\AcousticVirtualSensor\data\test\Bowl_2.wav,experiments/pipeline_k24_mel/results,experimental K=24 Mel-NMF,"[12, 6, 6]",64,power,log1p,0.014677602797746658,0.0059823933988809586,6,59.960408163265306,85,60,25
+E:\HUST\Master\Luận văn\AcousticVirtualSensor\data\test\Bowl_3.wav,experiments/pipeline_k24_mel/results,experimental K=24 Mel-NMF,"[12, 6, 6]",64,power,log1p,0.014677602797746658,0.0059823933988809586,6,89.87065759637188,107,105,2

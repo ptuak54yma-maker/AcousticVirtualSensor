@@ -1,9 +1,11 @@
 # Acoustic Virtual Sensor — ESP32-S3-N16R8
 
-Standalone ESP-IDF firmware folder for the ESP32-S3. By default it runs a
-synthetic-audio demo and prints results to the serial console, so it can be
-flashed and tried without a microphone or other external peripheral. It reuses
-the frozen NMF dictionary; it does not retrain or alter that model.
+Experimental ESP-IDF firmware project for the ESP32-S3. Every model and
+pipeline here is still being evaluated; none is the finalized selection. By
+default it runs a synthetic-audio demo and prints results to the serial console,
+so it can be flashed and tried without a microphone or other external
+peripheral. It reuses the current NMF dictionary candidate without retraining
+or altering it.
 
 ## What runs on the board
 
@@ -14,7 +16,7 @@ the first 24 event activations → 3-second event peak count → serial log with
 count and parts/second. Demo mode processes five seconds of synthetic audio
 then prints `DEMO_DONE` and idles.
 
-The initial port follows the project's embedded baseline. It does not execute
+This embedded implementation is one experiment in the pipeline comparison. It does not execute
 the PyTorch Hybrid CRNN yet. The `.pt` model cannot be loaded by ESP-IDF as-is;
 that stage needs an explicit export/conversion and frame/event parity validation
 before it can replace peak counting.
@@ -22,7 +24,7 @@ before it can replace peak counting.
 ## Arduino IDE option
 
 A separate Arduino sketch is provided in
-[`arduino_serial_demo/AVS_ESP32S3_Demo`](arduino_serial_demo/AVS_ESP32S3_Demo).
+[`arduino_experiments/AVS_ESP32S3_Demo`](arduino_experiments/AVS_ESP32S3_Demo).
 It receives WAV samples from a laptop over USB serial and processes them as a
 continuous stream, so it needs no microphone. See that folder's README for the
 sender script, board settings and upload steps. The ESP-IDF instructions below
@@ -70,9 +72,27 @@ shortcut that opens a shell with the required environment set up, as described
 in [Espressif's Windows flashing guide](https://docs.espressif.com/projects/esp-idf/en/v5.3.5/esp32s3/get-started/windows-setup.html).
 
 If running the exporter from another working directory, pass explicit paths,
-for example `--input ..\models\nmf\W_standard.npy --output main\w_standard_data.h`.
+for example `--input ..\models\nmf\W_standard.npy --output espidf_experiments\w_standard_data.h`.
 The generated header is ignored by Git because it is reproducible from the
 existing `W_standard.npy`.
+
+## ESP-DSP optimization variant
+
+The original scalar DSP implementation remains the default. To build the
+parallel ESP-DSP variant, run `idf.py menuconfig` and enable **Acoustic Virtual
+Sensor board → Use ESP-DSP optimized FFT and NNLS kernels**, then build as usual.
+ESP-IDF Component Manager downloads the pinned compatible ESP-DSP 1.8.x
+dependency on the first build. The alternate implementation is in
+`espidf_experiments/avs_pipeline_espdsp.cpp`; it uses ESP-DSP's complex FFT and float dot
+products while retaining the same 2,048 point frame, Hann window, log spectrum,
+48 component dictionary, and 64 FISTA iterations. Disable the option to return
+to the original implementation.
+
+This is an optimization candidate, not a validated speed claim. Compare spectra
+and all 48 activations against the baseline/Python outputs, then measure each
+stage and the full frame time on the target board before relying on real-time
+performance. Floating-point accumulation order differs in the DSP dot-product
+kernels, so small numeric differences are expected and should be checked.
 
 For microphone operation later, run `idf.py menuconfig` and disable
 **Acoustic Virtual Sensor board → Run synthetic serial-only demo**, set the
@@ -86,7 +106,7 @@ three I2S pins, then build and flash again.
 3. Compare spectra, all 48 NNLS activations, and event envelopes with
    `embedded/tools/verify_against_python.py` using representative 44.1 kHz WAVs.
 4. Compare event thresholds and timing with the Python baseline, then set the
-   trained peak prominence/distance in `main/avs_config.h`.
+   trained peak prominence/distance in `espidf_experiments/avs_config.h`.
 5. Measure per-frame processing time on the physical board. The 1,024-sample
    hop gives 23.22 ms per frame; no real-time performance claim is made until
    measurement confirms the deadline with margin.

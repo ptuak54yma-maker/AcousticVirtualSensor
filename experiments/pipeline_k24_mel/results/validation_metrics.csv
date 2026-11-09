@@ -1,0 +1,13 @@
+split,model,filename,true_count,pred_count,abs_error,accuracy_percent,frames,peak_prominence,peak_distance_frames
+validation,k48_original,Train_1.wav,27,28,1,96.2962962962963,817,0.01,4
+validation,k48_calibrated,Train_1.wav,27,30,3,88.88888888888889,817,0.0032482368405908346,6
+validation,k24_mel,Train_1.wav,27,30,3,88.88888888888889,817,0.0059823933988809586,6
+validation,k48_original,Train_15.wav,26,26,0,100.0,858,0.01,4
+validation,k48_calibrated,Train_15.wav,26,26,0,100.0,858,0.0032482368405908346,6
+validation,k24_mel,Train_15.wav,26,25,1,96.15384615384616,858,0.0059823933988809586,6
+validation,k48_original,Train_3.wav,22,23,1,95.45454545454545,857,0.01,4
+validation,k48_calibrated,Train_3.wav,22,25,3,86.36363636363636,857,0.0032482368405908346,6
+validation,k24_mel,Train_3.wav,22,23,1,95.45454545454545,857,0.0059823933988809586,6
+validation,k48_original,Train_4.wav,19,19,0,100.0,856,0.01,4
+validation,k48_calibrated,Train_4.wav,19,21,2,89.47368421052632,856,0.0032482368405908346,6
+validation,k24_mel,Train_4.wav,19,19,0,100.0,856,0.0059823933988809586,6

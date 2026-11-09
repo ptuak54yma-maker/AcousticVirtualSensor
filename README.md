@@ -20,6 +20,9 @@ AcousticVirtualSensor/
 ├── requirements.txt          # Danh sách thư viện phụ thuộc
 ├── README.md                 # Tài liệu hướng dẫn sử dụng
 │
+├── experiments/
+│   └── pipeline_k24_mel/     # Pipeline NMF thử nghiệm K=24 với Mel filterbank
+│
 ├── data/
 │   ├── train/                # Chứa file audio *.wav huấn luyện
 │   ├── test/                 # Chứa file audio *.wav kiểm thử độc lập

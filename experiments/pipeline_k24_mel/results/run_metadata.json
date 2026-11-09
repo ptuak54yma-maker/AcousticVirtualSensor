@@ -1,0 +1,90 @@
+{
+  "output_policy": "fixed results/ folder; each comparison overwrites prior outputs",
+  "comparison": "old K=48 log-magnitude vs experimental K=24 Mel-NMF",
+  "old_dictionary": "E:\\HUST\\Master\\Lu\u1eadn v\u0103n\\AcousticVirtualSensor\\models\\nmf\\W_standard.npy",
+  "new_dictionary": "E:\\HUST\\Master\\Lu\u1eadn v\u0103n\\AcousticVirtualSensor\\experiments\\pipeline_k24_mel\\models\\W_k24_mel.npz",
+  "new_frontend": {
+    "n_mels": 64,
+    "mel_input": "power",
+    "compressor": "log1p",
+    "compressor_reference": 0.014677602797746658,
+    "nmf_init": "nndsvda",
+    "nmf_max_iter": 50000,
+    "nmf_iterations_event_bowl_env": [
+      50000,
+      8487,
+      563
+    ],
+    "nmf_converged_event_bowl_env": [
+      false,
+      true,
+      true
+    ],
+    "components_event_bowl_env": [
+      12,
+      6,
+      6
+    ]
+  },
+  "peak_params": {
+    "k48_original_deployed": {
+      "prominence": 0.01,
+      "distance": 4
+    },
+    "k48_original_calibrated": {
+      "prominence": 0.0032482368405908346,
+      "distance": 6,
+      "calibration_count_mae": 1.4285714285714286,
+      "calibration_files": 14
+    },
+    "k24_mel": {
+      "prominence": 0.0059823933988809586,
+      "distance": 6,
+      "calibration_count_mae": 1.3571428571428572,
+      "calibration_files": 14
+    }
+  },
+  "threshold_tuning_data": [
+    "Train_0.wav",
+    "Train_10.wav",
+    "Train_11.wav",
+    "Train_12.wav",
+    "Train_13.wav",
+    "Train_14.wav",
+    "Train_16.wav",
+    "Train_17.wav",
+    "Train_2.wav",
+    "Train_5.wav",
+    "Train_6.wav",
+    "Train_7.wav",
+    "Train_8.wav",
+    "Train_9.wav"
+  ],
+  "validation_data": [
+    "Train_1.wav",
+    "Train_15.wav",
+    "Train_3.wav",
+    "Train_4.wav"
+  ],
+  "validation_accuracy_percent": {
+    "k24_mel": 95.12432012432012,
+    "k48_calibrated": 91.18155236576288,
+    "k48_original": 97.93771043771044
+  },
+  "accuracy_non_degraded_on_validation": false,
+  "all_nmf_sources_converged": false,
+  "promotion_status": "HOLD",
+  "test_data": [
+    "Bowl_0.wav",
+    "Bowl_1.wav",
+    "Bowl_2.wav",
+    "Bowl_3.wav"
+  ],
+  "test_event_annotations_available": false,
+  "test_accuracy_percent": {
+    "k48_original": 96.60138248847927,
+    "k48_calibrated": 94.06874039938556,
+    "k24_mel": 86.68778801843317
+  },
+  "accuracy_non_degraded_on_test_vs_deployed_k48": false
+}

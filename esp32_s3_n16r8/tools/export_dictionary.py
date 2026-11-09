@@ -8,7 +8,7 @@ import numpy as np
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", default="../models/nmf/W_standard.npy")
-    parser.add_argument("--output", default="main/w_standard_data.h")
+    parser.add_argument("--output", default="espidf_experiments/w_standard_data.h")
     args = parser.parse_args()
 
     weights = np.load(Path(args.input))
