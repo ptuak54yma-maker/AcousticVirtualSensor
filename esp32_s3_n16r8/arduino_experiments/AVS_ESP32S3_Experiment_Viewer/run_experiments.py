@@ -13,9 +13,10 @@ import numpy as np
 import serial
 import soundfile as sf
 from scipy.signal import find_peaks, resample_poly
+from profile_parameters import load_peak_params
 
 ROOT = Path(__file__).resolve().parents[3]
-PROFILES = ["legacy_nnls", "m64_nnls", "m128_nnls"] + [f"m64_fista{n}" for n in (8,16,32,64,128,256,512,1024,2048,4096)] + ["m128_fista512"]
+PROFILES = ["legacy_nnls", "m64_nnls", "m128_nnls"] + [f"m64_fista{n}" for n in (8,16,32,64,128,256,512,1024,2048,4096)] + ["m128_fista2048"]
 BLOCK = 512
 
 
@@ -78,7 +79,7 @@ def stream_profile(port: serial.Serial, audio: np.ndarray, profile: str) -> list
 
 
 def metrics(rows: list[dict], wav: Path, profile: str) -> dict | None:
-    label_files = [ROOT / "data" / split / "label.txt" for split in ("test", "train")]
+    label_files = [ROOT / "data" / "test" / "label.txt"]
     truth = None
     for file in label_files:
         if file.exists():
@@ -88,16 +89,9 @@ def metrics(rows: list[dict], wav: Path, profile: str) -> dict | None:
                     if name.strip().lower().removesuffix(".wav") == wav.stem.lower():
                         truth = int(value.strip()); break
         if truth is not None: break
-    params_path = ROOT / "experiments" / "pipeline_k48_mel" / "results" / "fista_peak_params.json"
-    if truth is None or not params_path.exists() or not rows:
+    if truth is None or not rows:
         return None
-    all_params = json.loads(params_path.read_text(encoding="utf-8"))
-    if profile == "legacy_nnls":
-        params = json.loads((ROOT / "models" / "peak_detection" / "peak_params.json").read_text(encoding="utf-8"))
-    else:
-        key = "python_scipy_nnls" if profile.endswith("nnls") else "fista_" + profile.removeprefix("m64_fista")
-        if profile == "m128_fista512": key = "fista_512"
-        params = all_params.get(key, all_params.get("fista_512"))
+    params = load_peak_params(ROOT, profile)
     env = np.asarray([r["event_score"] for r in rows])
     peaks = find_peaks(env, prominence=float(params["prominence"]), distance=int(params["distance"]))[0]
     return {"profile": profile, "truth": truth, "prediction": int(peaks.size),
@@ -132,7 +126,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True, help="ESP32 COM port, for example COM5")
     parser.add_argument("--wav", type=Path, required=True)
-    parser.add_argument("--baud", type=int, default=2_000_000)
+    parser.add_argument("--baud", type=int, default=1_000_000)
     parser.add_argument("--profiles", nargs="+", default=PROFILES, choices=PROFILES)
     parser.add_argument("--out", type=Path, default=ROOT / "outputs" / "arduino_experiment_viewer")
     args = parser.parse_args()

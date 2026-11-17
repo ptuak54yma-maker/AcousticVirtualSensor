@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stream every train/test WAV once; ESP32 runs the full C++ profile sweep per frame."""
+"""Stream held-out test WAVs to an ESP32 profile and compare with Python."""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +12,7 @@ import numpy as np
 import serial
 import soundfile as sf
 from scipy.signal import find_peaks, resample_poly
+from profile_parameters import load_peak_params
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
@@ -20,7 +21,7 @@ BLOCK = 512
 EXCLUDED_STEM_PREFIXES = ("phoi_", "noisebowl_", "noiseevir_")
 ALL_PROFILES = ["legacy_nnls", "m64_nnls", "m128_nnls"] + [
     f"m64_fista{n}" for n in (8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096)
-] + ["m128_fista512"]
+] + ["m128_fista2048"]
 PROFILES = ALL_PROFILES.copy()
 
 
@@ -72,7 +73,7 @@ def load_labels(path: Path) -> dict[str, int]:
 
 
 def dataset_wavs(split: str) -> list[Path]:
-    """Return only labeled train/test WAVs, excluding auxiliary recordings."""
+    """Return WAVs from one split, excluding auxiliary recordings."""
     folder = ROOT / "data" / split
     excluded = [p for p in folder.glob("*.wav")
                 if p.stem.lower().startswith(EXCLUDED_STEM_PREFIXES)]
@@ -81,23 +82,6 @@ def dataset_wavs(split: str) -> list[Path]:
               ", ".join(p.name for p in sorted(excluded)), flush=True)
     return [p for p in sorted(folder.glob("*.wav"))
             if not p.stem.lower().startswith(EXCLUDED_STEM_PREFIXES)]
-
-
-def tune_peaks(samples: list[dict]) -> dict:
-    candidates = [0.0]
-    for sample in samples:
-        peaks, props = find_peaks(sample["env"], prominence=0, distance=1)
-        candidates.extend(float(p) for p in props["prominences"] if p > 0 and np.isfinite(p))
-    thresholds = np.unique(np.quantile(candidates, np.linspace(0, 1, 101)))
-    best = None
-    for prominence in thresholds:
-        for distance in range(1, 16):
-            errors = [abs(find_peaks(s["env"], prominence=float(prominence), distance=distance)[0].size - s["truth"])
-                      for s in samples]
-            score = (float(np.mean(errors)), distance, float(prominence))
-            if best is None or score < best:
-                best = score
-    return {"train_mae": best[0], "distance": best[1], "prominence": best[2]}
 
 
 def fista_python(w: np.ndarray, v: np.ndarray, steps: int) -> np.ndarray:
@@ -141,9 +125,11 @@ def main() -> None:
         sys.stdout.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default="COM4")
-    parser.add_argument("--baud", type=int, default=2_000_000)
-    parser.add_argument("--split", choices=("all", "train", "test"), default="all")
+    parser.add_argument("--baud", type=int, default=1_000_000)
+    parser.add_argument("--split", choices=("test",), default="test",
+                        help="evaluation is restricted to the held-out test split")
     parser.add_argument("--profile", choices=ALL_PROFILES, help="run only the selected profile sketch")
+    parser.add_argument("--file", help="run one labeled WAV from data/test, for example Bowl_3.wav")
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--max-files", type=int, default=0, help="debug only; zero means every WAV in the selected split")
     parser.add_argument("--max-seconds", type=float, default=0, help="debug only; truncate each file and suppress label metrics")
@@ -151,16 +137,24 @@ def main() -> None:
     if args.profile:
         PROFILES[:] = [args.profile]
     if args.output is None:
-        args.output = (ROOT / "outputs" / "arduino_profile_experiments" / args.profile
-                       if args.profile else ROOT / "outputs" / "arduino_dataset_experiments")
+        if args.profile and args.file:
+            args.output = ROOT / "outputs" / "arduino_profile_experiments" / args.profile / Path(args.file).stem
+        elif args.profile:
+            args.output = ROOT / "outputs" / "arduino_profile_experiments" / args.profile
+        else:
+            args.output = ROOT / "outputs" / "arduino_dataset_experiments"
 
-    train_labels = load_labels(ROOT / "data" / "train" / "label.txt")
     test_labels = load_labels(ROOT / "data" / "test" / "label.txt")
-    files: list[tuple[str, Path]] = []
-    if args.split in ("all", "train"):
-        files += [("train", p) for p in dataset_wavs("train")]
-    if args.split in ("all", "test"):
-        files += [("test", p) for p in dataset_wavs("test")]
+    test_wavs = [p for p in dataset_wavs("test") if p.name in test_labels]
+    if args.file:
+        requested_name = Path(args.file).name
+        if not requested_name.lower().endswith(".wav"):
+            requested_name += ".wav"
+        files = [("test", p) for p in test_wavs if p.name.lower() == requested_name.lower()]
+        if not files:
+            raise FileNotFoundError(f"Labeled test WAV not found: {requested_name}")
+    else:
+        files = [("test", p) for p in test_wavs]
     if args.max_files:
         files = files[:args.max_files]
     if not files:
@@ -170,7 +164,6 @@ def main() -> None:
     activation_path = args.output / "cpp_activations.csv"
     feature_path = args.output / "cpp_features.csv"
     file_stats: list[dict] = []
-    envelope_bank: dict[tuple[str, str], list[float]] = {}
     timing_bank: dict[tuple[str, str], list[int]] = {}
     feature_errors: list[dict] = []
     memory_rows: list[dict] = []
@@ -205,12 +198,18 @@ def main() -> None:
         act_writer.writeheader(); feat_writer.writerow(["split", "file", "frame", "feature", "bin", "value"])
 
         with serial.Serial(args.port, args.baud, timeout=1, write_timeout=60) as port:
-            time.sleep(2); port.reset_input_buffer(); port.write(b"PING\n"); port.flush()
-            deadline = time.monotonic() + 30;board_ready=False
+            time.sleep(2); port.reset_input_buffer()
+            deadline = time.monotonic() + 30;next_ping=0.0;board_ready=False
             while not board_ready:
-                if time.monotonic() > deadline:
+                now=time.monotonic()
+                if now > deadline:
                     raise TimeoutError("ESP32 did not announce AVS_DATASET_READY on COM port.")
-                msg = read_line(port, 5)
+                if now >= next_ping:
+                    port.write(b"PING\n");port.flush();next_ping=now+1.0
+                try:
+                    msg = read_line(port, min(1.0, max(0.1, deadline-now)))
+                except TimeoutError:
+                    continue
                 if msg.startswith("PONG") or msg.startswith("AVS_DATASET_READY"):
                     if args.profile and f"profile={args.profile}" not in msg:
                         raise RuntimeError(f"Wrong ESP32 sketch for --profile {args.profile}: {msg}")
@@ -225,41 +224,21 @@ def main() -> None:
 
             for file_no, (split, wav_path) in enumerate(files, 1):
                 if split=="test" and not thresholds_sent:
-                    if args.split=="all" or args.split=="test":
-                        saved_params={}
-                        params_path=ROOT/"experiments"/"pipeline_k48_mel"/"results"/"fista_peak_params.json"
-                        if params_path.exists():
-                            import json
-                            saved_params=json.loads(params_path.read_text(encoding="utf-8"))
-                        old_params_path=ROOT/"models"/"peak_detection"/"peak_params.json"
-                        old_params=json.loads(old_params_path.read_text(encoding="utf-8")) if old_params_path.exists() else {"prominence":0.01,"distance":4}
-                        for profile in PROFILES:
-                            samples=[]
-                            for name,truth_value in sorted(train_labels.items()):
-                                env=envelope_bank.get((Path(name).stem,profile))
-                                if env is not None:samples.append({"env":np.asarray(env),"truth":truth_value,"file":name})
-                            if samples:params=tune_peaks(samples)
-                            elif profile=="legacy_nnls":params=old_params
-                            else:
-                                key="python_scipy_nnls" if profile.endswith("nnls") else "fista_"+profile.removeprefix("m64_fista")
-                                if profile=="m128_fista512":key="fista_512"
-                                params=saved_params.get(key,saved_params.get("fista_512",{"prominence":0,"distance":1}))
-                            port.write(f"THRESH {profile} {float(params['prominence']):.9g} {int(params['distance'])}\n".encode());port.flush()
-                            response=read_line(port,10)
-                            if not response.startswith(f"THRESH_ACK,{profile},"):
-                                raise RuntimeError(f"ESP32 rejected peak parameters: {response}")
+                    for profile in PROFILES:
+                        params=load_peak_params(ROOT,profile)
+                        port.write(f"THRESH {profile} {params['prominence']:.9g} {params['distance']}\n".encode());port.flush()
+                        response=read_line(port,10)
+                        if not response.startswith(f"THRESH_ACK,{profile},"):
+                            raise RuntimeError(f"ESP32 rejected peak parameters: {response}")
                     thresholds_sent=True
                 print(f"[{file_no}/{len(files)}] {split}: {wav_path.name}", flush=True)
                 audio = read_audio(wav_path)
-                truth = (train_labels if split == "train" else test_labels).get(wav_path.name, -1)
+                truth = test_labels.get(wav_path.name, -1)
                 if args.max_seconds>0:
                     audio=audio[:max(2048,int(args.max_seconds*44100))]
                     truth=-1
                     truncated_stems.add(wav_path.stem)
-                if split == "train":
-                    metric_split = "train_validation" if truth >= 0 else "train_unlabeled"
-                else:
-                    metric_split = "test"
+                metric_split = "test"
                 mean = float(np.mean(audio, dtype=np.float64))
                 slug = wav_path.stem.replace(" ", "_")
                 port.write(f"FILE {slug} {audio.size} {mean:.10g} {truth} {metric_split}\n".encode()); port.flush()
@@ -275,8 +254,6 @@ def main() -> None:
                 cpp64: list[list[float]] = []
                 cpp128: list[list[float]] = []
                 cpp_h: dict[str,list[list[float]]] = {profile:[] for profile in PROFILES}
-                file_envelopes: dict[str, list[float]] = {profile: [] for profile in PROFILES}
-                file_times: dict[str, list[int]] = {profile: [] for profile in PROFILES}
                 frames_seen: set[int] = set()
                 frame_solver_us: dict[int,dict[str,int]] = {}
                 frame_front_us: dict[int,int] = {}
@@ -294,16 +271,45 @@ def main() -> None:
                             "profile": profile, "frontend_us": front_i, "solver_us": solve_i,
                             "total_us": front_i + solve_i, "event_score": score_f,
                             **{f"h{i}": value for i, value in enumerate(activations)}})
-                        file_envelopes[profile].append(score_f); file_times[profile].append(front_i + solve_i)
                         timing_bank.setdefault((row_split,profile),[]).append(front_i+solve_i)
                         cpp_h[profile].append(activations)
                         frame_solver_us.setdefault(frame_i,{})[profile]=solve_i
                         frame_front_us[frame_i]=front_i
                         frames_seen.add(frame_i)
                     elif line.startswith("MEL64,") or line.startswith("MEL128,"):
-                        parts=line.split(","); kind=parts[0]; frame_i=int(parts[2]); values=[float(x) for x in parts[3:]]
+                        parts=line.split(","); kind=parts[0]
                         expected=64 if kind=="MEL64" else 128
-                        if len(values)!=expected: raise RuntimeError(f"Malformed {kind} feature frame {frame_i}")
+                        try:
+                            frame_i=int(parts[2])
+                        except (ValueError,IndexError) as error:
+                            raise RuntimeError(
+                                f"Corrupted {kind} serial row for {slug}, frame "
+                                f"{parts[2] if len(parts)>2 else '?'}; re-upload the current sketch "
+                                "and keep host/firmware baud rates matched. "
+                                f"Row starts: {line[:200]!r}"
+                            ) from error
+                        raw_values=parts[3:]
+                        if len(raw_values)<expected:
+                            raise RuntimeError(
+                                f"Malformed {kind} feature frame {frame_i}: got {len(raw_values)} bins, "
+                                f"expected {expected}; serial data may be truncated."
+                            )
+                        try:
+                            values=[float(x) for x in raw_values[:expected]]
+                        except ValueError as error:
+                            raise RuntimeError(
+                                f"Corrupted {kind} feature values for {slug}, frame {frame_i}; "
+                                f"row starts: {line[:200]!r}"
+                            ) from error
+                        trailing=raw_values[expected:]
+                        if trailing and not any(
+                            marker in ",".join(trailing)
+                            for marker in ("FRAME_WALL", "compute_us=", "telemetry_us=", "wall_us=")
+                        ):
+                            raise RuntimeError(
+                                f"Unexpected extra fields in {kind} frame {frame_i}: "
+                                f"{trailing[:4]!r}"
+                            )
                         (cpp64 if kind=="MEL64" else cpp128).append(values)
                         for band,value in enumerate(values): feat_writer.writerow([metric_split,slug,frame_i,kind.lower(),band,value])
                     elif line.startswith("MEM,"):
@@ -352,11 +358,10 @@ def main() -> None:
                     if len(PROFILES)==1:
                         solver_us=sum(profile_times.values())
                     else:
-                        unique_solver_profiles=("legacy_nnls","m64_nnls","m128_nnls","m64_fista4096","m128_fista512")
+                        unique_solver_profiles=("legacy_nnls","m64_nnls","m128_nnls","m64_fista4096","m128_fista2048")
                         solver_us=sum(profile_times.get(name,0) for name in unique_solver_profiles)
                     sweep_timing_bank.setdefault(metric_split,[]).append(frame_front_us[frame_i]+solver_us)
                 file_stats.append({"split":metric_split,"file":wav_path.name,"truth":truth,"samples":audio.size,"frames":actual_frames})
-                for profile in PROFILES:envelope_bank[(slug,profile)]=file_envelopes[profile]
                 print(f"    {actual_frames} frames; MCU frame-count check passed",flush=True)
 
                 if python_models is not None and cpp64 and cpp128:
@@ -395,45 +400,27 @@ def main() -> None:
                                 if wav_path.name in saved.files:py_h=np.asarray(saved[wav_path.name],dtype=np.float32)
                         if py_h is None:py_h=fista_python(np.asarray(m64["W"],dtype=np.float32),py_values[0],steps)
                         refs[profile]=py_h
-                    if "m128_fista512" in PROFILES:
-                        refs["m128_fista512"]=fista_python(np.asarray(m128["W"],dtype=np.float32),py_values[1],512)
+                    if "m128_fista2048" in PROFILES:
+                        refs["m128_fista2048"]=fista_python(np.asarray(m128["W"],dtype=np.float32),py_values[1],2048)
                     for profile,py_h in refs.items():
                         parity=h_metrics(cpp_arrays[profile],py_h)
                         python_h_errors.append({"split":metric_split,"file":wav_path.name,"profile":profile,**parity})
                         python_env_bank[(slug,profile)]=np.sum(py_h[:24],axis=0,dtype=np.float32)
 
-    # Tune p/d only on labeled training files; apply frozen settings to test.
+    # Evaluate test predictions with the matching Python-selected peak settings.
     prediction_rows=[]; metric_rows=[]; python_count_rows=[]
-    labeled_train={p.name for p in (ROOT/"data"/"train").glob("*.wav") if p.name in train_labels}
     # Envelopes have been written to the activation CSV; load just score columns for metrics.
     all_env: dict[tuple[str,str], list[float]]={}
     with activation_path.open(encoding="utf-8",newline="") as f:
         for row in csv.DictReader(f):
             key=(row["file"],row["profile"]);all_env.setdefault(key,[]).append(float(row["event_score"]))
-    truths={**train_labels,**test_labels}
+    truths=test_labels
     for profile in PROFILES:
-        calibration=[]
-        for name in sorted(labeled_train):
-            stem=name.removesuffix(".wav")
-            if stem in truncated_stems:continue
-            env=all_env.get((stem,profile))
-            if env is not None:calibration.append({"env":np.asarray(env),"truth":train_labels[name],"file":name})
-        if calibration:
-            params=tune_peaks(calibration)
-        else:
-            params_path=ROOT/"experiments"/"pipeline_k48_mel"/"results"/"fista_peak_params.json"
-            if not params_path.exists():continue
-            import json
-            saved=json.loads(params_path.read_text(encoding="utf-8"))
-            key="python_scipy_nnls" if profile.endswith("nnls") else "fista_"+profile.removeprefix("m64_fista")
-            if profile=="m128_fista512":key="fista_512"
-            if profile=="legacy_nnls":
-                params=json.loads((ROOT/"models"/"peak_detection"/"peak_params.json").read_text(encoding="utf-8"))
-            else:params=saved.get(key,saved.get("fista_512"))
+        params=load_peak_params(ROOT,profile)
         file_by_stem={p.stem:p for _,p in files}
         for (stem,model),env_values in all_env.items():
             if model!=profile or stem not in file_by_stem:continue
-            path=file_by_stem[stem];split="train" if path.parent.name=="train" else "test"
+            path=file_by_stem[stem];split="test"
             truth=-1 if stem in truncated_stems else truths.get(path.name,-1);env=np.asarray(env_values)
             peaks=find_peaks(env,prominence=params["prominence"],distance=params["distance"])[0]
             predicted=int(peaks.size)
@@ -457,7 +444,7 @@ def main() -> None:
                 metric_rows.append({"split":split,"file":path.name,"profile":profile,"truth":truth,
                     "prediction":predicted,"absolute_error":abs(predicted-truth),"count_accuracy_percent":accuracy,
                     "count_tp":min(predicted,truth),"count_fp":max(predicted-truth,0),"count_fn":max(truth-predicted,0)})
-        for split_name in ("train","test"):
+        for split_name in ("test",):
             rows=[r for r in metric_rows if r["split"]==split_name and r["profile"]==profile]
             if not rows:continue
             tp=sum(r["count_tp"] for r in rows);fp=sum(r["count_fp"] for r in rows);fn=sum(r["count_fn"] for r in rows)
@@ -465,7 +452,7 @@ def main() -> None:
                 "prediction":sum(r["prediction"] for r in rows),"absolute_error":float(np.mean([r["absolute_error"] for r in rows])),
                 "count_accuracy_percent":float(np.mean([r["count_accuracy_percent"] for r in rows])),
                 "count_tp":tp,"count_fp":fp,"count_fn":fn,"count_f1":(2*tp/(2*tp+fp+fn) if 2*tp+fp+fn else 0),
-                "peak_prominence":params["prominence"],"peak_distance":params["distance"],"tune_train_mae":params.get("train_mae","")})
+                "peak_prominence":params["prominence"],"peak_distance":params["distance"]})
 
     with (args.output/"predictions_per_file.csv").open("w",newline="",encoding="utf-8") as f:
         fields=sorted({k for r in prediction_rows for k in r});w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(prediction_rows)
@@ -479,7 +466,7 @@ def main() -> None:
     with (args.output/"python_cpp_count_comparison.csv").open("w",newline="",encoding="utf-8") as f:
         fields=sorted({k for r in python_count_rows for k in r});w=csv.DictWriter(f,fieldnames=fields);w.writeheader();w.writerows(python_count_rows)
     py_cpp_summary=[]
-    for split_name in ("train","test"):
+    for split_name in ("test",):
         for profile in PROFILES:
             rows=[r for r in python_count_rows if r["split"]==split_name and r["profile"]==profile and r["truth"]>=0]
             if rows:
@@ -496,7 +483,7 @@ def main() -> None:
 
     # Summarize MCU compute latency per profile and split (frontend + solver, telemetry excluded).
     timing_rows=[]
-    for split in ("train_calibration","train_validation","train_unlabeled","test"):
+    for split in ("test",):
         for profile in PROFILES:
             vals=timing_bank.get((split,profile),[])
             if vals:
@@ -522,12 +509,12 @@ def main() -> None:
         import matplotlib.pyplot as plt
         fig,(ax1,ax2)=plt.subplots(2,1,figsize=(14,10))
         x=np.arange(len(PROFILES));width=.36
-        for offset,split_name,color in ((-width/2,"train","tab:blue"),(width/2,"test","tab:orange")):
+        for offset,split_name,color in ((0,"test","tab:orange"),):
             values={r["profile"]:r["count_accuracy_percent"] for r in summaries if r["split"]==split_name}
             ax1.bar(x+offset,[values.get(p,0) for p in PROFILES],width,label=split_name,color=color)
         ax1.set_xticks(x,PROFILES,rotation=35,ha="right");ax1.set_ylabel("Mean per-file count accuracy (%)")
         ax1.set_title("ESP32-S3 C++ profile comparison");ax1.grid(axis="y",alpha=.25);ax1.legend()
-        for split_name,color in (("train_validation","tab:blue"),("test","tab:orange")):
+        for split_name,color in (("test","tab:orange"),):
             rows=[r for r in timing_rows if r["split"]==split_name and r["profile"] in PROFILES]
             mapping={r["profile"]:r["p95_ms"] for r in rows}
             ax2.plot(PROFILES,[mapping.get(p,np.nan) for p in PROFILES],marker="o",label=split_name,color=color)
@@ -536,7 +523,7 @@ def main() -> None:
         ax2.grid(alpha=.25);ax2.legend();fig.tight_layout();fig.savefig(args.output/"dataset_comparison.png",dpi=160)
     print(f"Saved dataset results to {args.output}")
     print("Count F1 is count-based (derived from per-file product counts); event timestamp labels are not present in label.txt.")
-    print("Peak parameters are tuned using all labeled train WAVs and then frozen for test.")
+    print("Peak parameters come from the saved Python result matching each profile.")
 
 
 if __name__ == "__main__":

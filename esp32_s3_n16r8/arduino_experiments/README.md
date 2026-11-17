@@ -167,24 +167,26 @@ python .\esp32_s3_n16r8\tools\export_arduino_experiment_models.py
 ```
 
 Open `AVS_ESP32S3_Experiment_Viewer\AVS_ESP32S3_Experiment_Viewer.ino` in
-Arduino IDE, select **ESP32S3 Dev Module** and the COM port, set **PSRAM = OPI
-PSRAM** and **Partition Scheme = Huge APP**, then upload once. PSRAM is used
+Arduino IDE, select **ESP32S3 Dev Module** and the COM port, set **Flash Size =
+16MB**, **PSRAM = OPI PSRAM**, and **Partition Scheme = Huge APP**, then upload
+once. The runner and firmware use a 1,000,000 baud serial link. PSRAM is used
 for per-file score buffers. Close Serial Monitor. Then install host packages
 and run one batch command:
 
 ```powershell
 python -m pip install -r .\esp32_s3_n16r8\arduino_experiments\requirements.txt
-python .\esp32_s3_n16r8\arduino_experiments\AVS_ESP32S3_Experiment_Viewer\run_dataset_experiments.py --port COM4 --split all
+python .\esp32_s3_n16r8\arduino_experiments\AVS_ESP32S3_Experiment_Viewer\run_dataset_experiments.py --port COM4
 ```
 
-The runner reads WAVs only from `data/train` and `data/test`. It skips files
-whose names start with `phoi_`, `noisebowl_`, or `noiseevir_`, even if they are
-inside one of those folders. With the current dataset this means 18 `Train_*.wav`
-files for train/validation and 4 `Bowl_*.wav` files for test: 22 WAVs total.
-No per-file commands or re-flashing are needed. `--split train` or `--split
-test` selects a subset, and `--max-files 1` is available for a short protocol
-check; `--max-seconds 2` truncates files to two seconds for a quick protocol
-check (truncated runs do not produce label metrics). Output goes to
+The evaluation runner reads only labeled WAVs from `data/test`; it never streams
+training recordings. It skips auxiliary files whose names start with `phoi_`,
+`noisebowl_`, or `noiseevir_`. The current held-out test set contains four
+`Bowl_*.wav` files. Peak prominence/distance are loaded from the saved Python
+result matching each profile; they are not tuned on the test set. Use
+`--max-files 1` for a short protocol check; `--max-seconds 2` truncates files
+and suppresses label metrics. To rerun one labeled file only, pass
+`--file Bowl_3.wav`; when a profile is selected, that run is saved under a
+file-specific subfolder so existing profile results are preserved. Output goes to
 `outputs\arduino_dataset_experiments`:
 
 - `cpp_activations.csv`: each frame's 48 H values and event envelope for all
@@ -194,10 +196,9 @@ check (truncated runs do not produce label metrics). Output goes to
 - `feature_parity.csv` and `activation_parity.csv`: C++ versus matching Python
   features/H metrics, including relative error and event-envelope correlation.
 - `python_cpp_count_comparison.csv` and `python_cpp_count_summary.csv`: C++ and
-  Python predictions compared using the same train-selected peak parameters.
-- `predictions_per_file.csv`, `count_metrics.csv`: per-file predictions and
-  train-tuned peak settings, with summary Count Accuracy, MAE, and count-based
-  F1 for train and test.
+  Python predictions compared using the matching Python-selected peak settings.
+- `predictions_per_file.csv`, `count_metrics.csv`: test predictions and summary
+  Count Accuracy, MAE, and count-based F1.
 - `timing_summary.csv`: mean/P50/P95/P99/max compute time, percentage below the
   23.22 ms target, plus telemetry wall time for the full sweep.
 - `memory_samples.csv`, `files_processed.csv`, and `dataset_comparison.png`.
@@ -212,10 +213,9 @@ per-profile compute latency.
 ## Separate profile sketches (lighter runs)
 
 For experiments that should run one model at a time, generate 14 profile
-sketches. Each sketch runs one solver/configuration over all 18 selected train
-WAVs and all 4 test WAVs; auxiliary `phoi_`, `noisebowl_`, and `noiseevir_`
-recordings remain excluded. Train is used to tune peak settings and test is
-measured with those settings. Results are saved in a folder named after the
+sketches. Each sketch runs one solver/configuration over the four held-out test
+WAVs and loads the saved Python peak settings for that same frontend/solver.
+Results are saved in a folder named after the
 profile, so each case has independent CSVs and a chart.
 
 From the project root, generate the model header and the separate sketches:
@@ -228,19 +228,20 @@ python .\esp32_s3_n16r8\arduino_experiments\generate_profile_sketches.py
 Open one matching sketch folder and `.ino` in Arduino IDE. For example, to run
 Mel64 FISTA with 8 iterations, open
 `AVS_ESP32S3_Profile_Sketches\m64_fista8\m64_fista8.ino`, select the ESP32-S3
-board and COM4, set **PSRAM = OPI PSRAM** and **Partition Scheme = Huge APP**,
-then upload. Close Serial Monitor and run:
+board and COM4, set **Flash Size = 16MB**, **PSRAM = OPI PSRAM**, and
+**Partition Scheme = Huge APP**, then upload. Close Serial Monitor and run:
 
 ```powershell
-python .\esp32_s3_n16r8\arduino_experiments\AVS_ESP32S3_Experiment_Viewer\run_dataset_experiments.py --port COM4 --split all --profile m64_fista8
+python .\esp32_s3_n16r8\arduino_experiments\AVS_ESP32S3_Experiment_Viewer\run_dataset_experiments.py --port COM4 --profile m64_fista8
 ```
 
 For another case, upload the matching sketch and replace `m64_fista8` in the
 command with its profile name. Available names are `legacy_nnls`, `m64_nnls`,
 `m128_nnls`, `m64_fista8`, `m64_fista16`, `m64_fista32`, `m64_fista64`,
 `m64_fista128`, `m64_fista256`, `m64_fista512`, `m64_fista1024`,
-`m64_fista2048`, `m64_fista4096`, and `m128_fista512`. This is one upload and
-one full-dataset run per case. Results for each case go to
+`m64_fista2048`, `m64_fista4096`, and `m128_fista2048`. Mel128 FISTA uses 2,048
+iterations to match the available Python Mel128 run and its saved peak settings.
+This is one upload and one test-set run per case. Results for each case go to
 `outputs\arduino_profile_experiments\<profile>\`; inspect
 `dataset_comparison.png`, `count_metrics.csv`, `python_cpp_count_summary.csv`,
 `timing_summary.csv`, and the parity CSVs there.

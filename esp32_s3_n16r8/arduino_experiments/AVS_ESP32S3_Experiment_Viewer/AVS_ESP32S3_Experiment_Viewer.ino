@@ -11,6 +11,9 @@
 #ifndef AVS_PROFILE_ID
 #define AVS_PROFILE_ID -1
 #endif
+#ifndef AVS_SERIAL_BAUD
+#define AVS_SERIAL_BAUD 1000000UL
+#endif
 
 namespace {
 constexpr size_t NFFT=2048, HOP=1024, NBINS=1025, K=48, BLOCK=512;
@@ -19,7 +22,7 @@ constexpr uint16_t STEPS[]={8,16,32,64,128,256,512,1024,2048,4096};
 constexpr size_t N_STEPS=sizeof(STEPS)/sizeof(STEPS[0]);
 constexpr size_t ALL_PROFILES=3+N_STEPS+1;
 constexpr size_t N_PROFILES=AVS_PROFILE_ID<0?ALL_PROFILES:1;
-const char *PROFILE_NAMES[ALL_PROFILES]={"legacy_nnls","m64_nnls","m128_nnls","m64_fista8","m64_fista16","m64_fista32","m64_fista64","m64_fista128","m64_fista256","m64_fista512","m64_fista1024","m64_fista2048","m64_fista4096","m128_fista512"};
+const char *PROFILE_NAMES[ALL_PROFILES]={"legacy_nnls","m64_nnls","m128_nnls","m64_fista8","m64_fista16","m64_fista32","m64_fista64","m64_fista128","m64_fista256","m64_fista512","m64_fista1024","m64_fista2048","m64_fista4096","m128_fista2048"};
 struct ProfileResult { char name[24]; float h[K]; float event; uint32_t solver_us; };
 struct PeakCandidate { uint32_t index; float height; float prominence; };
 
@@ -108,10 +111,10 @@ void solveFista128(const uint32_t frontUs){
   const uint32_t start=(uint32_t)esp_timer_get_time();calcRhs(AVS_MEL128_W,mel128,128);memset(fistaX,0,sizeof(fistaX));memset(fistaY,0,sizeof(fistaY));
   float lipschitz=0;for(size_t i=0;i<K;i++){float row=0;for(size_t j=0;j<K;j++)row+=gram128[i*K+j];lipschitz=fmaxf(lipschitz,row);}
   if(!(lipschitz>0))return;float t=1;
-  for(uint32_t iter=1;iter<=512;iter++){float tn=.5f*(1+sqrtf(1+4*t*t));
+  for(uint32_t iter=1;iter<=2048;iter++){float tn=.5f*(1+sqrtf(1+4*t*t));
     for(size_t j=0;j<K;j++){float gy=0;for(size_t k=0;k<K;k++)gy+=gram128[j*K+k]*fistaY[k];fistaNext[j]=fmaxf(0,fistaY[j]-(gy-rhs[j])/lipschitz);}
     for(size_t j=0;j<K;j++)fistaY[j]=fistaNext[j]+((t-1)/tn)*(fistaNext[j]-fistaX[j]);memcpy(fistaX,fistaNext,sizeof(fistaX));t=tn;}
-  const uint32_t elapsed=(uint32_t)esp_timer_get_time()-start;currentComputeUs+=elapsed;saveActivation("m128_fista512",fistaX,elapsed);
+  const uint32_t elapsed=(uint32_t)esp_timer_get_time()-start;currentComputeUs+=elapsed;saveActivation("m128_fista2048",fistaX,elapsed);
 }
 
 void processFrame(){
@@ -238,7 +241,7 @@ void handleCommand(const String &cmd){
 }
 
 void setup(){
-  Serial.begin(2000000);Serial.setTimeout(30000);
+  Serial.begin(AVS_SERIAL_BAUD);Serial.setTimeout(30000);
   for(size_t n=0;n<NFFT;n++)windowFn[n]=.5f-.5f*cosf(2*PI_F*(float)n/NFFT);
   buildGram(AVS_OLD_W,NBINS,gramOld);buildGram(AVS_MEL64_W,64,gram64);buildGram(AVS_MEL128_W,128,gram128);
   ready=true;
