@@ -326,7 +326,9 @@ def main() -> None:
                             values=[float(x) for x in raw_values[:expected]]
                         except ValueError as error:
                             raise RuntimeError(
-                                f"Corrupted {kind} feature values for {slug}, frame {frame_i}; "
+                                f"Corrupted {kind} serial row for {slug}, frame {frame_i}; "
+                                "re-upload the current sketch and keep host/firmware baud rates matched "
+                                "(1,000,000 baud). "
                                 f"row starts: {line[:200]!r}"
                             ) from error
                         trailing=raw_values[expected:]

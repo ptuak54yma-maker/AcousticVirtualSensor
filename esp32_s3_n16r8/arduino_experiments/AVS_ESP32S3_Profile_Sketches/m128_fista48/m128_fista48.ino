@@ -33,6 +33,7 @@ float magnitude[NBINS], oldFeatures[NBINS], mel64[64], mel128[128];
 float gramOld[K*K], gram64[K*K], gram128[K*K];
 float rhs[K], cdH[K], fistaX[K], fistaY[K], fistaNext[K];
 uint8_t rx[BLOCK*sizeof(float)];
+char telemetryLine[2304];
 ProfileResult outputs[N_PROFILES];
 float *eventScores=nullptr; size_t scoreCapacity=0;
 float peakProminence[N_PROFILES]{}; uint16_t peakDistance[N_PROFILES]{}; bool peakConfigured[N_PROFILES]{};
@@ -76,9 +77,15 @@ void saveActivation(const char *profile,const float *h,uint32_t solverUs,uint16_
   memcpy(out.h,h,sizeof(out.h));out.event=eventSum(h);out.solver_us=solverUs;out.iterations=iterations;
 }
 void emitMel(const char *name,const float *v,size_t rows){
-  Serial.printf("%s,%s,%u",name,fileId,(unsigned)frameCount);
-  for(size_t i=0;i<rows;i++)Serial.printf(",%.7g",(double)v[i]);
-  Serial.println();
+  int used=snprintf(telemetryLine,sizeof(telemetryLine),"%s,%s,%u",name,fileId,(unsigned)frameCount);
+  if(used<0||(size_t)used>=sizeof(telemetryLine)){Serial.println("ERROR,TELEMETRY_ROW_TOO_LONG");return;}
+  for(size_t i=0;i<rows;i++){
+    const size_t remaining=sizeof(telemetryLine)-(size_t)used;
+    const int added=snprintf(telemetryLine+used,remaining,",%.7g",(double)v[i]);
+    if(added<0||(size_t)added>=remaining){Serial.println("ERROR,TELEMETRY_ROW_TOO_LONG");return;}
+    used+=added;
+  }
+  telemetryLine[used++]='\n';Serial.write((const uint8_t*)telemetryLine,(size_t)used);
 }
 
 uint16_t solveCd(const float *w,const float *v,size_t rows,const float *gram,const char *name,uint16_t maxSweeps,bool stopOnConvergence){
@@ -163,9 +170,17 @@ void processFrame(){
   const uint32_t outputStart=(uint32_t)esp_timer_get_time();
   emitMel("MEL64",mel64,64);emitMel("MEL128",mel128,128);
   for(size_t i=0;i<outputCount;i++){const ProfileResult &out=outputs[i];
-    Serial.printf("ACT,%s,%s,%u,%s,%u,%u,%u,%.8g",dataSplit,fileId,(unsigned)frameCount,out.name,
-                  (unsigned)frontUs,(unsigned)out.solver_us,(unsigned)out.iterations,(double)out.event);
-    for(size_t j=0;j<K;j++)Serial.printf(",%.7g",(double)out.h[j]);Serial.println();}
+    int used=snprintf(telemetryLine,sizeof(telemetryLine),"ACT,%s,%s,%u,%s,%u,%u,%u,%.8g",dataSplit,fileId,(unsigned)frameCount,out.name,
+                      (unsigned)frontUs,(unsigned)out.solver_us,(unsigned)out.iterations,(double)out.event);
+    if(used<0||(size_t)used>=sizeof(telemetryLine)){Serial.println("ERROR,TELEMETRY_ROW_TOO_LONG");continue;}
+    bool rowOk=true;
+    for(size_t j=0;j<K;j++){
+      const size_t remaining=sizeof(telemetryLine)-(size_t)used;
+      const int added=snprintf(telemetryLine+used,remaining,",%.7g",(double)out.h[j]);
+      if(added<0||(size_t)added>=remaining){Serial.println("ERROR,TELEMETRY_ROW_TOO_LONG");rowOk=false;break;}
+      used+=added;
+    }
+    if(rowOk){telemetryLine[used++]='\n';Serial.write((const uint8_t*)telemetryLine,(size_t)used);}}
   Serial.flush();const uint32_t telemetryUs=(uint32_t)esp_timer_get_time()-outputStart;
   Serial.printf("FRAME_WALL,%s,%u,compute_us=%llu,telemetry_us=%u,wall_us=%llu\n",fileId,(unsigned)frameCount,
     (unsigned long long)currentComputeUs,(unsigned)telemetryUs,(unsigned long long)(currentComputeUs+telemetryUs));
