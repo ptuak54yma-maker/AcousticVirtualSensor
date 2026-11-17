@@ -153,8 +153,9 @@ does not capture through an I2S microphone or include microphone/ADC latency.
 
 `AVS_ESP32S3_Experiment_Viewer` runs the entire profile sweep in C++ for each
 frame while the host streams each WAV once. Profiles are legacy 1025-bin NNLS,
-Mel64 NNLS, Mel128 NNLS, Mel64 FISTA at 8 through 4096 iterations, and Mel128
-FISTA512. The C++ sketch emits Mel64/Mel128 features and all 48 activations for
+Mel64/Mel128 NNLS, Mel64 FISTA at 8 through 4096 iterations, Mel128 FISTA2048,
+and four 48-step convergence-limited cases: FISTA and coordinate descent for
+both Mel64 and Mel128. The C++ sketch emits Mel64/Mel128 features and all 48 activations for
 each profile, so the host can compare features, H, event envelopes, peak
 counts, and timing. Frame state is streaming; WAVs are not limited by a
 fixed-size envelope array.
@@ -189,8 +190,8 @@ and suppresses label metrics. To rerun one labeled file only, pass
 file-specific subfolder so existing profile results are preserved. Output goes to
 `outputs\arduino_dataset_experiments`:
 
-- `cpp_activations.csv`: each frame's 48 H values and event envelope for all
-  C++ profiles.
+- `cpp_activations.csv`: each frame's 48 H values, event envelope, and actual
+  solver iteration/sweep count for all C++ profiles.
 - `cpp_features.csv` and per-file `*_cpp_features.npz`: C++ Mel64/Mel128
   features.
 - `feature_parity.csv` and `activation_parity.csv`: C++ versus matching Python
@@ -199,20 +200,26 @@ file-specific subfolder so existing profile results are preserved. Output goes t
   Python predictions compared using the matching Python-selected peak settings.
 - `predictions_per_file.csv`, `count_metrics.csv`: test predictions and summary
   Count Accuracy, MAE, and count-based F1.
-- `timing_summary.csv`: mean/P50/P95/P99/max compute time, percentage below the
-  23.22 ms target, plus telemetry wall time for the full sweep.
+- `timing_summary.csv`: mean/P50/P95/P99/max compute time, actual mean/max
+  iteration count, percentage below the 23.22 ms target, plus telemetry wall
+  time for the full sweep.
 - `memory_samples.csv`, `files_processed.csv`, and `dataset_comparison.png`.
 
 Only product counts are present in the supplied label files, so Event F1 is
 reported as a count-based proxy; timestamp-level event matching needs
 frame/peak annotations. The legacy MCU NNLS profile uses fixed-sweep
-coordinate descent, while Python's exact reference uses SciPy NNLS. Timing
-separates computation from serial telemetry; the latter is excluded from the
-per-profile compute latency.
+coordinate descent, while Python's exact reference uses SciPy NNLS. The new
+`m64_fista48`, `m128_fista48`, `m64_cd48`, and `m128_cd48` cases stop when the
+largest activation change is at most `1e-4 * (1 + max_abs_activation)`, or at
+their limit of 48 FISTA iterations / CD sweeps. Each activation row records the
+number actually completed. Peak settings use the closest saved Python reference
+for FISTA48 and the saved SciPy NNLS settings for CD48. Timing separates
+computation from serial telemetry; the latter is excluded from the per-profile
+compute latency.
 
 ## Separate profile sketches (lighter runs)
 
-For experiments that should run one model at a time, generate 14 profile
+For experiments that should run one model at a time, generate 18 profile
 sketches. Each sketch runs one solver/configuration over the four held-out test
 WAVs and loads the saved Python peak settings for that same frontend/solver.
 Results are saved in a folder named after the
@@ -239,8 +246,10 @@ For another case, upload the matching sketch and replace `m64_fista8` in the
 command with its profile name. Available names are `legacy_nnls`, `m64_nnls`,
 `m128_nnls`, `m64_fista8`, `m64_fista16`, `m64_fista32`, `m64_fista64`,
 `m64_fista128`, `m64_fista256`, `m64_fista512`, `m64_fista1024`,
-`m64_fista2048`, `m64_fista4096`, and `m128_fista2048`. Mel128 FISTA uses 2,048
-iterations to match the available Python Mel128 run and its saved peak settings.
+`m64_fista2048`, `m64_fista4096`, `m128_fista2048`, `m64_fista48`,
+`m128_fista48`, `m64_cd48`, and `m128_cd48`. The 48-step cases stop early when
+the activation update converges and report actual iterations/sweeps in
+`cpp_activations.csv`. Mel128 FISTA2048 matches the available Python Mel128 run.
 This is one upload and one test-set run per case. Results for each case go to
 `outputs\arduino_profile_experiments\<profile>\`; inspect
 `dataset_comparison.png`, `count_metrics.csv`, `python_cpp_count_summary.csv`,

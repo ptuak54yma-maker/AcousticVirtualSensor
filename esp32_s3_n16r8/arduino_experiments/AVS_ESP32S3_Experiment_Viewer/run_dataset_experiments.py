@@ -21,7 +21,7 @@ BLOCK = 512
 EXCLUDED_STEM_PREFIXES = ("phoi_", "noisebowl_", "noiseevir_")
 ALL_PROFILES = ["legacy_nnls", "m64_nnls", "m128_nnls"] + [
     f"m64_fista{n}" for n in (8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096)
-] + ["m128_fista2048"]
+] + ["m128_fista2048", "m64_fista48", "m128_fista48", "m64_cd48", "m128_cd48"]
 PROFILES = ALL_PROFILES.copy()
 
 
@@ -84,7 +84,7 @@ def dataset_wavs(split: str) -> list[Path]:
             if not p.stem.lower().startswith(EXCLUDED_STEM_PREFIXES)]
 
 
-def fista_python(w: np.ndarray, v: np.ndarray, steps: int) -> np.ndarray:
+def fista_python(w: np.ndarray, v: np.ndarray, steps: int, tolerance: float | None = None) -> np.ndarray:
     w=np.asarray(w,dtype=np.float32);v=np.asarray(v,dtype=np.float32)
     gram=np.asarray(w.T@w,dtype=np.float32);rhs=np.asarray(w.T@v,dtype=np.float32)
     lipschitz=float(np.max(np.sum(gram,axis=1,dtype=np.float32)))
@@ -94,8 +94,34 @@ def fista_python(w: np.ndarray, v: np.ndarray, steps: int) -> np.ndarray:
         next_scale=np.float32(.5)*(np.float32(1)+np.sqrt(np.float32(1)+np.float32(4)*scale*scale))
         beta=(scale-np.float32(1))/next_scale
         x_next=np.maximum(np.float32(0),y+step*(rhs-gram@y))
+        max_delta=float(np.max(np.abs(x_next-x)))
+        max_magnitude=float(np.max(np.abs(x_next)))
         y=x_next+beta*(x_next-x);x,scale=x_next,next_scale
+        if tolerance is not None and max_delta<=tolerance*(1.0+max_magnitude):
+            break
     return np.ascontiguousarray(x,dtype=np.float32)
+
+
+def coordinate_descent_python(w: np.ndarray, v: np.ndarray, max_sweeps: int,
+                              tolerance: float) -> np.ndarray:
+    """Mirror the firmware's nonnegative Gauss-Seidel coordinate descent."""
+    w=np.asarray(w,dtype=np.float32);v=np.asarray(v,dtype=np.float32)
+    gram=np.asarray(w.T@w,dtype=np.float32);rhs=np.asarray(w.T@v,dtype=np.float32)
+    h=np.zeros_like(rhs)
+    for frame in range(v.shape[1]):
+        solution=h[:,frame]
+        for _ in range(max_sweeps):
+            max_delta=0.0;max_magnitude=0.0
+            for j in range(w.shape[1]):
+                previous=float(solution[j]);residual=float(rhs[j,frame])
+                for k in range(w.shape[1]):
+                    if k!=j:residual-=float(gram[j,k])*float(solution[k])
+                diagonal=float(gram[j,j])
+                solution[j]=max(0.0,residual/diagonal) if diagonal>1e-20 else 0.0
+                max_delta=max(max_delta,abs(float(solution[j])-previous))
+                max_magnitude=max(max_magnitude,abs(float(solution[j])))
+            if max_delta<=tolerance*(1.0+max_magnitude):break
+    return np.ascontiguousarray(h,dtype=np.float32)
 
 
 def h_metrics(cpp_h: np.ndarray, py_h: np.ndarray) -> dict:
@@ -165,6 +191,7 @@ def main() -> None:
     feature_path = args.output / "cpp_features.csv"
     file_stats: list[dict] = []
     timing_bank: dict[tuple[str, str], list[int]] = {}
+    iteration_bank: dict[tuple[str, str], list[int]] = {}
     feature_errors: list[dict] = []
     memory_rows: list[dict] = []
     python_models = None
@@ -192,7 +219,7 @@ def main() -> None:
 
     with activation_path.open("w", newline="", encoding="utf-8") as act_file, \
          feature_path.open("w", newline="", encoding="utf-8") as feat_file:
-        act_fields = ["split", "file", "frame", "profile", "frontend_us", "solver_us", "total_us", "event_score"] + [f"h{i}" for i in range(48)]
+        act_fields = ["split", "file", "frame", "profile", "frontend_us", "solver_us", "iterations", "total_us", "event_score"] + [f"h{i}" for i in range(48)]
         feat_writer = csv.writer(feat_file)
         act_writer = csv.DictWriter(act_file, fieldnames=act_fields)
         act_writer.writeheader(); feat_writer.writerow(["split", "file", "frame", "feature", "bin", "value"])
@@ -261,17 +288,18 @@ def main() -> None:
                 def collect(line: str) -> None:
                     if line.startswith("ACT,"):
                         parts = line.split(",")
-                        # ACT,split,file,frame,profile,frontend_us,solver_us,event,H0..H47
-                        if len(parts) != 56:
+                        # ACT,split,file,frame,profile,frontend_us,solver_us,iterations,event,H0..H47
+                        if len(parts) != 57:
                             raise RuntimeError(f"Malformed ACT record ({len(parts)} fields): {line[:160]}")
-                        _, row_split, row_file, frame, profile, front, solve, score, *h = parts
-                        frame_i = int(frame); front_i=int(front); solve_i=int(solve); score_f=float(score)
+                        _, row_split, row_file, frame, profile, front, solve, iterations, score, *h = parts
+                        frame_i = int(frame); front_i=int(front); solve_i=int(solve); iteration_i=int(iterations); score_f=float(score)
                         activations = [float(x) for x in h]
                         safe_write_row(act_writer, {"split": row_split, "file": row_file, "frame": frame_i,
-                            "profile": profile, "frontend_us": front_i, "solver_us": solve_i,
+                            "profile": profile, "frontend_us": front_i, "solver_us": solve_i, "iterations": iteration_i,
                             "total_us": front_i + solve_i, "event_score": score_f,
                             **{f"h{i}": value for i, value in enumerate(activations)}})
                         timing_bank.setdefault((row_split,profile),[]).append(front_i+solve_i)
+                        iteration_bank.setdefault((row_split,profile),[]).append(iteration_i)
                         cpp_h[profile].append(activations)
                         frame_solver_us.setdefault(frame_i,{})[profile]=solve_i
                         frame_front_us[frame_i]=front_i
@@ -358,7 +386,8 @@ def main() -> None:
                     if len(PROFILES)==1:
                         solver_us=sum(profile_times.values())
                     else:
-                        unique_solver_profiles=("legacy_nnls","m64_nnls","m128_nnls","m64_fista4096","m128_fista2048")
+                        unique_solver_profiles=("legacy_nnls","m64_nnls","m128_nnls","m64_fista4096","m128_fista2048",
+                                                "m64_fista48","m128_fista48","m64_cd48","m128_cd48")
                         solver_us=sum(profile_times.get(name,0) for name in unique_solver_profiles)
                     sweep_timing_bank.setdefault(metric_split,[]).append(frame_front_us[frame_i]+solver_us)
                 file_stats.append({"split":metric_split,"file":wav_path.name,"truth":truth,"samples":audio.size,"frames":actual_frames})
@@ -402,6 +431,14 @@ def main() -> None:
                         refs[profile]=py_h
                     if "m128_fista2048" in PROFILES:
                         refs["m128_fista2048"]=fista_python(np.asarray(m128["W"],dtype=np.float32),py_values[1],2048)
+                    if "m64_fista48" in PROFILES:
+                        refs["m64_fista48"]=fista_python(np.asarray(m64["W"],dtype=np.float32),py_values[0],48,1e-4)
+                    if "m128_fista48" in PROFILES:
+                        refs["m128_fista48"]=fista_python(np.asarray(m128["W"],dtype=np.float32),py_values[1],48,1e-4)
+                    if "m64_cd48" in PROFILES:
+                        refs["m64_cd48"]=coordinate_descent_python(np.asarray(m64["W"],dtype=np.float32),py_values[0],48,1e-4)
+                    if "m128_cd48" in PROFILES:
+                        refs["m128_cd48"]=coordinate_descent_python(np.asarray(m128["W"],dtype=np.float32),py_values[1],48,1e-4)
                     for profile,py_h in refs.items():
                         parity=h_metrics(cpp_arrays[profile],py_h)
                         python_h_errors.append({"split":metric_split,"file":wav_path.name,"profile":profile,**parity})
@@ -491,6 +528,8 @@ def main() -> None:
                 timing_rows.append({"split":split,"profile":profile,"frames":len(vals),"mean_ms":float(np.mean(ms)),
                     "p50_ms":float(np.percentile(ms,50)),"p95_ms":float(np.percentile(ms,95)),
                     "p99_ms":float(np.percentile(ms,99)),"max_ms":float(np.max(ms)),
+                    "mean_iterations":float(np.mean(iteration_bank.get((split,profile),[]))),
+                    "max_iterations":int(np.max(iteration_bank.get((split,profile),[0]))),
                     "realtime_limit_ms":23.22,"frames_within_realtime_percent":float(np.mean(ms<=23.22)*100)})
     for split,vals in sweep_timing_bank.items():
         ms=np.asarray(vals,dtype=float)/1000

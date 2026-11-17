@@ -21,10 +21,11 @@ constexpr size_t NFFT=2048, HOP=1024, NBINS=1025, K=48, BLOCK=512;
 constexpr float PI_F=3.14159265358979323846f;
 constexpr uint16_t STEPS[]={8,16,32,64,128,256,512,1024,2048,4096};
 constexpr size_t N_STEPS=sizeof(STEPS)/sizeof(STEPS[0]);
-constexpr size_t ALL_PROFILES=3+N_STEPS+1;
+constexpr size_t ALL_PROFILES=3+N_STEPS+1+4;
 constexpr size_t N_PROFILES=AVS_PROFILE_ID<0?ALL_PROFILES:1;
-const char *PROFILE_NAMES[ALL_PROFILES]={"legacy_nnls","m64_nnls","m128_nnls","m64_fista8","m64_fista16","m64_fista32","m64_fista64","m64_fista128","m64_fista256","m64_fista512","m64_fista1024","m64_fista2048","m64_fista4096","m128_fista2048"};
-struct ProfileResult { char name[24]; float h[K]; float event; uint32_t solver_us; };
+constexpr float CONVERGENCE_TOL=1e-4f;
+const char *PROFILE_NAMES[ALL_PROFILES]={"legacy_nnls","m64_nnls","m128_nnls","m64_fista8","m64_fista16","m64_fista32","m64_fista64","m64_fista128","m64_fista256","m64_fista512","m64_fista1024","m64_fista2048","m64_fista4096","m128_fista2048","m64_fista48","m128_fista48","m64_cd48","m128_cd48"};
+struct ProfileResult { char name[24]; float h[K]; float event; uint32_t solver_us; uint16_t iterations; };
 struct PeakCandidate { uint32_t index; float height; float prominence; };
 
 float windowFn[NFFT], realPart[NFFT], imagPart[NFFT], frame[NFFT];
@@ -69,10 +70,10 @@ void calcRhs(const float *w,const float *v,size_t rows){
 float eventSum(const float *h){float sum=0;for(size_t j=0;j<24;j++)sum+=h[j];return sum;}
 
 size_t outputCount=0;uint64_t currentComputeUs=0;
-void saveActivation(const char *profile,const float *h,uint32_t solverUs){
+void saveActivation(const char *profile,const float *h,uint32_t solverUs,uint16_t iterations){
   if(outputCount>=sizeof(outputs)/sizeof(outputs[0]))return;
   ProfileResult &out=outputs[outputCount++];strlcpy(out.name,profile,sizeof(out.name));
-  memcpy(out.h,h,sizeof(out.h));out.event=eventSum(h);out.solver_us=solverUs;
+  memcpy(out.h,h,sizeof(out.h));out.event=eventSum(h);out.solver_us=solverUs;out.iterations=iterations;
 }
 void emitMel(const char *name,const float *v,size_t rows){
   Serial.printf("%s,%s,%u",name,fileId,(unsigned)frameCount);
@@ -80,13 +81,40 @@ void emitMel(const char *name,const float *v,size_t rows){
   Serial.println();
 }
 
-void solveCd(const float *w,const float *v,size_t rows,const float *gram,const char *name,uint32_t frontUs){
+uint16_t solveCd(const float *w,const float *v,size_t rows,const float *gram,const char *name,uint16_t maxSweeps,bool stopOnConvergence){
   const uint32_t t0=(uint32_t)esp_timer_get_time();calcRhs(w,v,rows);memset(cdH,0,sizeof(cdH));
-  for(unsigned sweep=0;sweep<80;sweep++)for(size_t j=0;j<K;j++){
-    float residual=rhs[j];for(size_t k=0;k<K;k++)if(k!=j)residual-=gram[j*K+k]*cdH[k];
-    const float diagonal=gram[j*K+j];cdH[j]=diagonal>1e-20f?fmaxf(0,residual/diagonal):0;
+  uint16_t sweeps=0;
+  for(unsigned sweep=0;sweep<maxSweeps;sweep++){
+    float maxDelta=0,maxMagnitude=0;
+    for(size_t j=0;j<K;j++){
+      const float previous=cdH[j];float residual=rhs[j];
+      for(size_t k=0;k<K;k++)if(k!=j)residual-=gram[j*K+k]*cdH[k];
+      const float diagonal=gram[j*K+j];cdH[j]=diagonal>1e-20f?fmaxf(0,residual/diagonal):0;
+      maxDelta=fmaxf(maxDelta,fabsf(cdH[j]-previous));maxMagnitude=fmaxf(maxMagnitude,fabsf(cdH[j]));
+    }
+    sweeps=(uint16_t)(sweep+1);
+    if(stopOnConvergence&&maxDelta<=CONVERGENCE_TOL*(1.0f+maxMagnitude))break;
   }
-  const uint32_t elapsed=(uint32_t)esp_timer_get_time()-t0;currentComputeUs+=elapsed;saveActivation(name,cdH,elapsed);
+  const uint32_t elapsed=(uint32_t)esp_timer_get_time()-t0;currentComputeUs+=elapsed;saveActivation(name,cdH,elapsed,sweeps);return sweeps;
+}
+
+void solveFistaConvergent(const float *gram,const char *name,uint16_t maxIterations){
+  const uint32_t start=(uint32_t)esp_timer_get_time();memset(fistaX,0,sizeof(fistaX));memset(fistaY,0,sizeof(fistaY));
+  float lipschitz=0;for(size_t i=0;i<K;i++){float row=0;for(size_t j=0;j<K;j++)row+=gram[i*K+j];lipschitz=fmaxf(lipschitz,row);}
+  if(!(lipschitz>0)){saveActivation(name,fistaX,0,0);return;}
+  float t=1;uint16_t iterations=0;
+  for(uint16_t iter=1;iter<=maxIterations;iter++){
+    const float tn=.5f*(1+sqrtf(1+4*t*t));float maxDelta=0,maxMagnitude=0;
+    for(size_t j=0;j<K;j++){
+      float gy=0;for(size_t k=0;k<K;k++)gy+=gram[j*K+k]*fistaY[k];
+      fistaNext[j]=fmaxf(0,fistaY[j]-(gy-rhs[j])/lipschitz);
+      maxDelta=fmaxf(maxDelta,fabsf(fistaNext[j]-fistaX[j]));maxMagnitude=fmaxf(maxMagnitude,fabsf(fistaNext[j]));
+    }
+    for(size_t j=0;j<K;j++)fistaY[j]=fistaNext[j]+((t-1)/tn)*(fistaNext[j]-fistaX[j]);
+    memcpy(fistaX,fistaNext,sizeof(fistaX));t=tn;iterations=iter;
+    if(maxDelta<=CONVERGENCE_TOL*(1.0f+maxMagnitude))break;
+  }
+  const uint32_t elapsed=(uint32_t)esp_timer_get_time()-start;currentComputeUs+=elapsed;saveActivation(name,fistaX,elapsed,iterations);
 }
 
 void solveFista64(const uint32_t frontUs){
@@ -101,9 +129,9 @@ void solveFista64(const uint32_t frontUs){
     for(size_t j=0;j<K;j++)fistaY[j]=fistaNext[j]+((t-1)/tn)*(fistaNext[j]-fistaX[j]);
     memcpy(fistaX,fistaNext,sizeof(fistaX));t=tn;
     if(AVS_PROFILE_ID<0){if(target<N_STEPS&&iter==STEPS[target]){char name[24];snprintf(name,sizeof(name),"m64_fista%u",(unsigned)iter);
-        saveActivation(name,fistaX,(uint32_t)esp_timer_get_time()-start);target++;}}
+        saveActivation(name,fistaX,(uint32_t)esp_timer_get_time()-start,(uint16_t)iter);target++;}}
     else if(iter==maxIterations){char name[24];snprintf(name,sizeof(name),"m64_fista%u",(unsigned)iter);
-      saveActivation(name,fistaX,(uint32_t)esp_timer_get_time()-start);}
+      saveActivation(name,fistaX,(uint32_t)esp_timer_get_time()-start,(uint16_t)iter);}
   }
   currentComputeUs+=(uint32_t)esp_timer_get_time()-start;
 }
@@ -115,24 +143,28 @@ void solveFista128(const uint32_t frontUs){
   for(uint32_t iter=1;iter<=2048;iter++){float tn=.5f*(1+sqrtf(1+4*t*t));
     for(size_t j=0;j<K;j++){float gy=0;for(size_t k=0;k<K;k++)gy+=gram128[j*K+k]*fistaY[k];fistaNext[j]=fmaxf(0,fistaY[j]-(gy-rhs[j])/lipschitz);}
     for(size_t j=0;j<K;j++)fistaY[j]=fistaNext[j]+((t-1)/tn)*(fistaNext[j]-fistaX[j]);memcpy(fistaX,fistaNext,sizeof(fistaX));t=tn;}
-  const uint32_t elapsed=(uint32_t)esp_timer_get_time()-start;currentComputeUs+=elapsed;saveActivation("m128_fista2048",fistaX,elapsed);
+  const uint32_t elapsed=(uint32_t)esp_timer_get_time()-start;currentComputeUs+=elapsed;saveActivation("m128_fista2048",fistaX,elapsed,2048);
 }
 
 void processFrame(){
   const uint32_t frameStart=(uint32_t)esp_timer_get_time();makeFeatures();const uint32_t frontUs=(uint32_t)esp_timer_get_time()-frameStart;
   totalFrontendUs+=frontUs;outputCount=0;currentComputeUs=frontUs;
-  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==0)solveCd(AVS_OLD_W,oldFeatures,NBINS,gramOld,"legacy_nnls",frontUs);
-  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==1)solveCd(AVS_MEL64_W,mel64,64,gram64,"m64_nnls",frontUs);
-  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==2)solveCd(AVS_MEL128_W,mel128,128,gram128,"m128_nnls",frontUs);
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==0)solveCd(AVS_OLD_W,oldFeatures,NBINS,gramOld,"legacy_nnls",80,false);
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==1)solveCd(AVS_MEL64_W,mel64,64,gram64,"m64_nnls",80,false);
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==2)solveCd(AVS_MEL128_W,mel128,128,gram128,"m128_nnls",80,false);
   if(AVS_PROFILE_ID<0||(AVS_PROFILE_ID>=3&&AVS_PROFILE_ID<3+(int)N_STEPS))solveFista64(frontUs);
   if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==13)solveFista128(frontUs);
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==14){calcRhs(AVS_MEL64_W,mel64,64);solveFistaConvergent(gram64,"m64_fista48",48);}
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==15){calcRhs(AVS_MEL128_W,mel128,128);solveFistaConvergent(gram128,"m128_fista48",48);}
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==16)solveCd(AVS_MEL64_W,mel64,64,gram64,"m64_cd48",48,true);
+  if(AVS_PROFILE_ID<0||AVS_PROFILE_ID==17)solveCd(AVS_MEL128_W,mel128,128,gram128,"m128_cd48",48,true);
   minFrameTotalUs=min(minFrameTotalUs,currentComputeUs);maxFrameTotalUs=max(maxFrameTotalUs,currentComputeUs);
   if(eventScores&&frameCount<scoreCapacity)for(size_t i=0;i<outputCount;i++)eventScores[frameCount*N_PROFILES+i]=outputs[i].event;
   const uint32_t outputStart=(uint32_t)esp_timer_get_time();
   emitMel("MEL64",mel64,64);emitMel("MEL128",mel128,128);
   for(size_t i=0;i<outputCount;i++){const ProfileResult &out=outputs[i];
-    Serial.printf("ACT,%s,%s,%u,%s,%u,%u,%.8g",dataSplit,fileId,(unsigned)frameCount,out.name,
-                  (unsigned)frontUs,(unsigned)out.solver_us,(double)out.event);
+    Serial.printf("ACT,%s,%s,%u,%s,%u,%u,%u,%.8g",dataSplit,fileId,(unsigned)frameCount,out.name,
+                  (unsigned)frontUs,(unsigned)out.solver_us,(unsigned)out.iterations,(double)out.event);
     for(size_t j=0;j<K;j++)Serial.printf(",%.7g",(double)out.h[j]);Serial.println();}
   Serial.flush();const uint32_t telemetryUs=(uint32_t)esp_timer_get_time()-outputStart;
   Serial.printf("FRAME_WALL,%s,%u,compute_us=%llu,telemetry_us=%u,wall_us=%llu\n",fileId,(unsigned)frameCount,

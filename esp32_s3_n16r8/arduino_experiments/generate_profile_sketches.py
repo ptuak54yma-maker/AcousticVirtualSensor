@@ -15,6 +15,7 @@ PROFILES = [
     "m64_fista8", "m64_fista16", "m64_fista32", "m64_fista64",
     "m64_fista128", "m64_fista256", "m64_fista512", "m64_fista1024",
     "m64_fista2048", "m64_fista4096", "m128_fista2048",
+    "m64_fista48", "m128_fista48", "m64_cd48", "m128_cd48",
 ]
 
 
